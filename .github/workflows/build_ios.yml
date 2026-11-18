@@ -1,0 +1,56 @@
+name: Build iOS (IPA)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+
+env:
+  FLUTTER_VERSION: '3.47.9'
+
+jobs:
+  ios:
+    name: Build iOS IPA (红果-阿帝版)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install
+          cd ..
+
+      - name: Build iOS (No Codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          zip -r -q "HongGuo-AdiBan.ipa" Payload
+          ls -lh HongGuo-AdiBan.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HongGuo-AdiBan-iOS-IPA
+          path: build/ios/ipa/HongGuo-AdiBan.ipa
+          retention-days: 14

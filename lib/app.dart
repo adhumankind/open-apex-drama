@@ -13,7 +13,7 @@ class ApexApp extends StatelessWidget {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: appearanceMode,
       builder: (BuildContext context, ThemeMode mode, _) => MaterialApp(
-        title: 'ApexDrama',
+        title: '红果-阿帝版',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light,
         darkTheme: AppTheme.dark,

@@ -72,6 +72,12 @@ VideoControllerConfiguration videoOutputConfiguration(VideoOutputMode mode) {
         hwdec: 'auto-safe',
       );
     case VideoOutputMode.texture:
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        return const VideoControllerConfiguration(
+          enableHardwareAcceleration: true,
+          hwdec: 'videotoolbox',
+        );
+      }
       // 决断实验：enableHardwareAcceleration=false 排查 ANGLE/D3D11 路径死锁。
       return const VideoControllerConfiguration(
         enableHardwareAcceleration: false,

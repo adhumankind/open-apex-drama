@@ -29,6 +29,7 @@ dependencies:
   url_launcher: ^6.3.3
   package_info_plus: ^10.2.2
   media_kit_libs_windows_video: ^1.0.11
+  media_kit_libs_ios_video: ^1.1.4
   window_manager: ^0.5.1
   path_provider: ^2.1.6
   open_filex: ^5.0.0
