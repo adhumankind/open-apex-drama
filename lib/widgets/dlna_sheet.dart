@@ -154,7 +154,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
                         child: ListView.separated(
                           shrinkWrap: true,
                           itemCount: devices.length,
-                          separatorBuilder: (_, __) => Divider(
+                          separatorBuilder: (_, _) => Divider(
                             color: Colors.white.withValues(alpha: 0.08),
                             height: 1,
                           ),

@@ -74,8 +74,8 @@ jobs:
       - name: Analyze Flutter
         run: flutter analyze
 
-      - name: Build iOS (Verbose)
-        run: flutter build ios --release --no-codesign -v
+      - name: Build iOS (No Codesign)
+        run: flutter build ios --release --no-codesign
 
       - name: Package IPA
         run: |

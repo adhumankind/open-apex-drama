@@ -2994,28 +2994,6 @@ class _ActionRail extends StatelessWidget {
             onTap: onToggleDanmaku,
           ),
           const SizedBox(height: 10),
-          _RailAction(
-            icon: Icons.tune_rounded,
-            label: '设置',
-            tooltip: '播放设置',
-            onTap: onMore,
-          ),
-          const SizedBox(height: 18),
-          _RailAction(
-            icon: favorited ? Icons.star_rounded : Icons.star_border_rounded,
-            label: favorited ? '已收藏' : '收藏',
-            onTap: onFavorite,
-            iconColor: favorited ? const Color(0xFFFFC94D) : null,
-          ),
-        ] else ...<Widget>[
-          _RailAction(
-            icon: danmakuOn
-                ? Icons.subtitles_rounded
-                : Icons.subtitles_off_rounded,
-            label: danmakuOn ? '弹幕开' : '弹幕关',
-            onTap: onToggleDanmaku,
-          ),
-          const SizedBox(height: 10),
           // 开关旁边紧邻设置入口：桌面端开浮动面板。
           _RailAction(
             icon: Icons.tune_rounded,
