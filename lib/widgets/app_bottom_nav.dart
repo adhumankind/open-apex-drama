@@ -1,3 +1,4 @@
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 
 import '../theme/app_colors.dart';
@@ -52,26 +53,31 @@ class AppBottomNav extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final AppColors colors = context.colors;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.navBar,
-        border: Border(top: BorderSide(color: colors.hairline, width: 0.8)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.only(top: 6, bottom: 4),
-          child: Row(
-            children: <Widget>[
-              for (int i = 0; i < entries.length; i++)
-                Expanded(
-                  child: _NavItem(
-                    entry: entries[i],
-                    selected: i == index,
-                    onTap: () => onChanged(i),
-                  ),
-                ),
-            ],
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: colors.navBar.withValues(alpha: 0.85),
+            border: Border(top: BorderSide(color: colors.hairline, width: 0.8)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6, bottom: 4),
+              child: Row(
+                children: <Widget>[
+                  for (int i = 0; i < entries.length; i++)
+                    Expanded(
+                      child: _NavItem(
+                        entry: entries[i],
+                        selected: i == index,
+                        onTap: () => onChanged(i),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
       ),

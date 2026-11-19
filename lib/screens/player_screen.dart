@@ -923,18 +923,106 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   /// 本集自然播完：移动端竖屏先走与手动上滑一致的上滑动画，再切集；
   /// 其余场景（桌面 / 全屏 / 最后一集）沿用直接切集。
+  void _showSeriesFinishedSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext ctx) {
+        return ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+              decoration: BoxDecoration(
+                color: const Color(0xFF161822).withValues(alpha: 0.92),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.12), width: 0.5),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text('🎉', style: TextStyle(fontSize: 40)),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '恭喜追完全部剧集',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '《${_activeDrama.title}》全 $_episodeCount 集已播放完毕',
+                    style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.6)),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () {
+                            Navigator.of(ctx).pop();
+                            setState(() => _episode = 1);
+                            _boot();
+                          },
+                          child: const Text('重温第 1 集'),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFFF4D4F),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () {
+                            Navigator.of(ctx).pop();
+                            Navigator.of(context).maybePop();
+                          },
+                          child: const Text('返回发现新剧'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _onEpisodeCompleted() {
     if (_autoAdvancing) {
       return;
     }
     if (_episodeCount > 0 && _episode + 1 > _episodeCount) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('已看完全部剧集 🎉'),
-            duration: Duration(seconds: 3),
-          ),
-        );
+        _showSeriesFinishedSheet();
       }
       return;
     }
@@ -1316,10 +1404,40 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     return done.future;
   }
 
+  int _verticalDragMode = 0; // 0: 上下滑切集, 1: 左边缘亮度, 2: 右边缘音量
+  double _screenBrightness = 1.0;
+
+  void _adjustBrightness(double delta) {
+    setState(() {
+      _screenBrightness = (_screenBrightness + delta).clamp(0.2, 1.0);
+    });
+    _showDoubleTapHint('☀️ 亮度 ${(_screenBrightness * 100).toInt()}%');
+  }
+
+  void _adjustVolume(double delta) {
+    setState(() {
+      _volume = (_volume + delta).clamp(0.0, 1.0);
+      _muted = _volume <= 0.01;
+    });
+    _player?.setVolume(_volume * 100);
+    _showDoubleTapHint(_volume <= 0.01 ? '🔇 静音' : '🔊 音量 ${(_volume * 100).toInt()}%');
+  }
+
   void _onVerticalDragStart(DragStartDetails details) {
     if (!_isMobilePlatform || _isWideLayout) {
       return;
     }
+    final double width = MediaQuery.sizeOf(context).width;
+    final double xRatio = details.localPosition.dx / width;
+    if (xRatio < 0.18) {
+      _verticalDragMode = 1;
+      return;
+    }
+    if (xRatio > 0.82) {
+      _verticalDragMode = 2;
+      return;
+    }
+    _verticalDragMode = 0;
     // 作废上一次未完成的提交/回弹，避免旧动画在松手后继续改集号。
     _swipeToken++;
     _swipeController.stop();
@@ -1327,6 +1445,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
     if (!_isMobilePlatform || _isWideLayout) {
+      return;
+    }
+    if (_verticalDragMode == 1) {
+      final double delta = -details.delta.dy / 250.0;
+      _adjustBrightness(delta);
+      return;
+    }
+    if (_verticalDragMode == 2) {
+      final double delta = -details.delta.dy / 250.0;
+      _adjustVolume(delta);
       return;
     }
     final double height = MediaQuery.sizeOf(context).height;
@@ -1346,6 +1474,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   void _onVerticalDragEnd(DragEndDetails details) {
     if (!_isMobilePlatform || _isWideLayout) {
+      return;
+    }
+    if (_verticalDragMode != 0) {
+      _verticalDragMode = 0;
       return;
     }
     final double height = MediaQuery.sizeOf(context).height;
@@ -2106,6 +2238,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                   ),
                                 ),
                               ),
+                      // 屏幕亮度调暗蒙层（夜间观影防刺眼保护眼睛）
+                      if (_screenBrightness < 0.99)
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: Container(
+                              color: Colors.black.withValues(
+                                alpha: (1.0 - _screenBrightness).clamp(0.0, 0.8),
+                              ),
+                            ),
+                          ),
+                        ),
                       // 中央双击快退/快进提示胶囊
                       if (_centerHintText != null)
                         Center(

@@ -145,6 +145,14 @@ abstract final class AppTheme {
         color: palette.brand,
         linearTrackColor: palette.surfaceMuted,
       ),
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: <TargetPlatform, PageTransitionsBuilder>{
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
+        },
+      ),
     );
   }
 }
