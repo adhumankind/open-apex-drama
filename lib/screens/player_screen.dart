@@ -143,7 +143,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// 当前季的 seriesId：拉分集、解析播放都用它，而不是固定的 widget.drama.id。
   late String _seriesId = widget.drama.id;
 
-  bool _autoPlay = true;
+  bool _autoPlay = autoPlayNotifier.value;
 
   /// 自然播完自动切集中的防重入（动画期间 completed 可能再次触发）。
   bool _autoAdvancing = false;
@@ -804,6 +804,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       return;
     }
     if (_episodeCount > 0 && _episode + 1 > _episodeCount) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已看完全部剧集 🎉'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
       return;
     }
     if (!_isMobilePlatform || _isWideLayout) {
@@ -915,7 +923,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     showPlayerActionsSheet(
       context,
       autoPlay: _autoPlay,
-      onAutoPlayChanged: (bool value) => setState(() => _autoPlay = value),
+      onAutoPlayChanged: (bool value) {
+        setState(() => _autoPlay = value);
+        saveAutoPlay(value);
+      },
       volume: _muted ? 0 : _volume,
       muted: _muted,
       onVolumeChanged: (double value) {
@@ -1868,9 +1879,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                             enabled:
                                                 _episodeCount == 0 ||
                                                 _episode < _episodeCount,
-                                            onToggleAutoPlay: () => setState(
-                                              () => _autoPlay = !_autoPlay,
-                                            ),
+                                            onToggleAutoPlay: () {
+                                              final bool next = !_autoPlay;
+                                              setState(() => _autoPlay = next);
+                                              saveAutoPlay(next);
+                                            },
                                             onOpenNext: _playNext,
                                           ),
                                         ],
