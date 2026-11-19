@@ -21,6 +21,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          gomobile init
+
+      - name: Rebuild OpenhongguoCore with V5 playback protocol
+        run: |
+          git clone https://github.com/Sxuan-Coder/openhongguo.git /tmp/openhongguo
+          cd /tmp/openhongguo/bindings/mobile/core
+          gomobile bind -target ios,iossimulator -iosversion 13 -trimpath -ldflags="-s -w" -o /tmp/OpenhongguoCore.xcframework .
+          python3 -c "
+          with open('/tmp/OpenhongguoCore.xcframework/ios-arm64/OpenhongguoCore.framework/OpenhongguoCore', 'rb') as f:
+              data = f.read()
+          print('multi_video_model check:', b'multi_video_model' in data)
+          assert b'multi_video_model' in data, 'ERROR: multi_video_model missing!'
+          "
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -30,6 +54,16 @@ jobs:
 
       - name: Install Flutter dependencies
         run: flutter pub get
+
+      - name: Patch cached openhongguo with newly compiled OpenhongguoCore
+        run: |
+          find "$HOME" -name "OpenhongguoCore.xcframework" -type d 2>/dev/null | while read -r dir; do
+            if [[ "$dir" != "/tmp/OpenhongguoCore.xcframework"* ]]; then
+              echo "Found and replacing: $dir"
+              rm -rf "$dir"
+              cp -R /tmp/OpenhongguoCore.xcframework "$dir"
+            fi
+          done
 
       - name: Install CocoaPods
         run: |
