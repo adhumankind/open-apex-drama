@@ -47,7 +47,10 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# 本地设计稿与测试截图（不入库）
+# 本地构建产物
+*.ipa
+*.zip
+dist/
 /design/
 
 # Windows 打包产物（不入库）
