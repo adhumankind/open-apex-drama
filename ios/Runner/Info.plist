@@ -10,6 +10,9 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- DLNA 电视投屏：发现局域网内的小米电视、爱奇艺电视果等设备 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>红果-阿帝版需要访问本地网络以搜索小米电视、电视果等投屏设备</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

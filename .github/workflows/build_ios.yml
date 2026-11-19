@@ -72,7 +72,34 @@ jobs:
           cd ..
 
       - name: Build iOS (No Codesign)
-        run: flutter build ios --release --no-codesign
+        run: |
+          echo "Building iOS with Flutter..."
+          flutter build ios --release --no-codesign || true
+
+          if [ ! -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "Searching for Runner.app in build/ios..."
+            APP_DIR=$(find build/ios -type d -name "Runner.app" 2>/dev/null | head -n 1)
+            if [ -n "$APP_DIR" ]; then
+              echo "Found Runner.app at $APP_DIR, copying to build/ios/iphoneos/Runner.app"
+              mkdir -p build/ios/iphoneos
+              cp -R "$APP_DIR" build/ios/iphoneos/Runner.app
+            else
+              echo "Falling back to direct xcodebuild..."
+              xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -derivedDataPath build/ios build
+              FOUND=$(find build/ios -type d -name "Runner.app" 2>/dev/null | head -n 1)
+              if [ -n "$FOUND" ]; then
+                mkdir -p build/ios/iphoneos
+                cp -R "$FOUND" build/ios/iphoneos/Runner.app
+              fi
+            fi
+          fi
+
+          if [ ! -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "ERROR: Runner.app could not be found or built!"
+            exit 1
+          fi
+          echo "Successfully prepared Runner.app:"
+          ls -ld build/ios/iphoneos/Runner.app
 
       - name: Package IPA
         run: |
