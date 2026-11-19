@@ -1,10 +1,12 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 
+import '../app_state/playback_prefs.dart';
 import '../theme/app_colors.dart';
 
-/// 移动端播放页的「播放设置」弹层。
+/// 移动端播放页的「播放设置」弹层（iOS 原生磨砂毛玻璃质感）。
 ///
-/// 承接右栏和长按中间两个入口：清晰度、弹幕设置、自动播放、音量。
+/// 承接右栏和长按中间两个入口：清晰度、弹幕设置、自动播放、跳过片头片尾、音量。
 /// 不常用但需要在播放中快速调整的项集中在这里，避免底部控制行拥挤。
 Future<void> showPlayerActionsSheet(
   BuildContext context, {
@@ -64,10 +66,58 @@ class _PlayerActionsSheetState extends State<PlayerActionsSheet> {
   late bool _autoPlay = widget.autoPlay;
   late double _volume = widget.volume;
   late bool _muted = widget.muted;
+  late int _skipIntro = skipIntroSecondsNotifier.value;
+  late int _skipOutro = skipOutroSecondsNotifier.value;
 
   void _dismissThen(VoidCallback action) {
     Navigator.of(context).pop();
     action();
+  }
+
+  void _showSkipDialog({required bool isIntro}) {
+    final int current = isIntro ? _skipIntro : _skipOutro;
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E2028),
+          title: Text(
+            isIntro ? '跳过片头' : '跳过片尾',
+            style: const TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <int>[0, 3, 5, 8, 10].map((int seconds) {
+              final bool selected = current == seconds;
+              return ListTile(
+                title: Text(
+                  seconds == 0 ? '不跳过' : '跳过 $seconds 秒',
+                  style: TextStyle(
+                    color: selected ? const Color(0xFFFF4D4F) : Colors.white,
+                    fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+                trailing: selected
+                    ? const Icon(Icons.check, color: Color(0xFFFF4D4F))
+                    : null,
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  setState(() {
+                    if (isIntro) {
+                      _skipIntro = seconds;
+                      saveSkipIntroSeconds(seconds);
+                    } else {
+                      _skipOutro = seconds;
+                      saveSkipOutroSeconds(seconds);
+                    }
+                  });
+                },
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -75,83 +125,105 @@ class _PlayerActionsSheetState extends State<PlayerActionsSheet> {
     final String quality = widget.qualityLabel.isEmpty
         ? '自动'
         : widget.qualityLabel;
-    return SafeArea(
-      top: false,
-      child: Container(
-        decoration: const BoxDecoration(
-          color: AppTokens.immersiveSurface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            const _SheetHandle(),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 4, 8, 4),
-              child: Row(
-                children: <Widget>[
-                  const Expanded(
-                    child: Text(
-                      '播放设置',
-                      style: TextStyle(
-                        fontSize: 15,
-                        height: 1.2,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF14161E).withValues(alpha: 0.88),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.12),
+              width: 0.5,
+            ),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const _SheetHandle(),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 4, 8, 4),
+                  child: Row(
+                    children: <Widget>[
+                      const Expanded(
+                        child: Text(
+                          '播放设置',
+                          style: TextStyle(
+                            fontSize: 15,
+                            height: 1.2,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
-                    ),
+                      IconButton(
+                        tooltip: '关闭',
+                        onPressed: () => Navigator.of(context).maybePop(),
+                        icon: Icon(
+                          Icons.close_rounded,
+                          size: 20,
+                          color: Colors.white.withValues(alpha: 0.72),
+                        ),
+                        constraints: const BoxConstraints.tightFor(
+                          width: 40,
+                          height: 40,
+                        ),
+                      ),
+                    ],
                   ),
-                  IconButton(
-                    tooltip: '关闭',
-                    onPressed: () => Navigator.of(context).maybePop(),
-                    icon: Icon(
-                      Icons.close_rounded,
-                      size: 20,
-                      color: Colors.white.withValues(alpha: 0.72),
-                    ),
-                    constraints: const BoxConstraints.tightFor(
-                      width: 40,
-                      height: 40,
-                    ),
+                ),
+                _SheetRow(
+                  icon: Icons.high_quality_rounded,
+                  label: '清晰度',
+                  value: quality,
+                  onTap: () => _dismissThen(widget.onQuality),
+                ),
+                _SheetRow(
+                  icon: Icons.subtitles_rounded,
+                  label: '弹幕设置',
+                  onTap: () => _dismissThen(widget.onDanmakuSettings),
+                ),
+                _SheetRow(
+                  icon: Icons.play_circle_outline_rounded,
+                  label: '自动播放下一集',
+                  trailing: _SheetSwitch(
+                    value: _autoPlay,
+                    onChanged: (bool value) {
+                      setState(() => _autoPlay = value);
+                      widget.onAutoPlayChanged(value);
+                    },
                   ),
-                ],
-              ),
+                ),
+                _SheetRow(
+                  icon: Icons.fast_forward_rounded,
+                  label: '跳过片头',
+                  value: _skipIntro == 0 ? '不跳过' : '$_skipIntro秒',
+                  onTap: () => _showSkipDialog(isIntro: true),
+                ),
+                _SheetRow(
+                  icon: Icons.skip_next_rounded,
+                  label: '跳过片尾',
+                  value: _skipOutro == 0 ? '不跳过' : '$_skipOutro秒',
+                  onTap: () => _showSkipDialog(isIntro: false),
+                ),
+                _VolumeRow(
+                  volume: _muted ? 0 : _volume,
+                  muted: _muted,
+                  onChanged: (double value) {
+                    setState(() {
+                      _volume = value;
+                      _muted = value <= 0.01;
+                    });
+                    widget.onVolumeChanged(value);
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
             ),
-            _SheetRow(
-              icon: Icons.high_quality_rounded,
-              label: '清晰度',
-              value: quality,
-              onTap: () => _dismissThen(widget.onQuality),
-            ),
-            _SheetRow(
-              icon: Icons.subtitles_rounded,
-              label: '弹幕设置',
-              onTap: () => _dismissThen(widget.onDanmakuSettings),
-            ),
-            _SheetRow(
-              icon: Icons.play_circle_outline_rounded,
-              label: '自动播放',
-              trailing: _SheetSwitch(
-                value: _autoPlay,
-                onChanged: (bool value) {
-                  setState(() => _autoPlay = value);
-                  widget.onAutoPlayChanged(value);
-                },
-              ),
-            ),
-            _VolumeRow(
-              volume: _muted ? 0 : _volume,
-              muted: _muted,
-              onChanged: (double value) {
-                setState(() {
-                  _volume = value;
-                  _muted = value <= 0.01;
-                });
-                widget.onVolumeChanged(value);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
+          ),
         ),
       ),
     );

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -28,6 +29,10 @@ import '../widgets/danmaku_layer.dart';
 import '../widgets/danmaku_settings.dart';
 import '../widgets/player_actions_sheet.dart';
 import '../widgets/poster_artwork.dart';
+import '../services/dlna/dlna_device.dart';
+import '../services/dlna/dlna_manager.dart';
+import '../widgets/cast_remote_overlay.dart';
+import '../widgets/dlna_sheet.dart';
 
 Future<void> openPlayer(
   BuildContext context,
@@ -181,6 +186,89 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// 快进/快退由左右滑动与键盘 ←/→ 承担，长按不再做 10 秒步进。
   bool _holdSpeedActive = false;
   static const double _holdRate = 2.0;
+
+  /// 中央双击快进/快退提示与定时器
+  String? _centerHintText;
+  Timer? _centerHintTimer;
+
+  void _showDoubleTapHint(String text) {
+    _centerHintTimer?.cancel();
+    setState(() => _centerHintText = text);
+    _centerHintTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _centerHintText = null);
+    });
+  }
+
+  void _seekRelative(int seconds) {
+    final Player? player = _player;
+    if (player == null) return;
+    final Duration current = player.state.position;
+    final Duration total = player.state.duration;
+    final Duration target = current + Duration(seconds: seconds);
+    final Duration clamped = target < Duration.zero
+        ? Duration.zero
+        : (total > Duration.zero && target > total ? total : target);
+    player.seek(clamped);
+    _persistProgress(force: true);
+    HapticFeedback.lightImpact();
+    _showDoubleTapHint(seconds > 0 ? '+5s 快进' : '-5s 快退');
+  }
+
+  Future<void> _handleCastTap() async {
+    final DlnaManager manager = DlnaManager.instance;
+    if (manager.isCastingNotifier.value) {
+      final DlnaDevice? picked = await showCastDeviceSheet(context);
+      if (picked != null && mounted) {
+        _startCastToDevice(picked);
+      }
+      return;
+    }
+
+    final DlnaDevice? picked = await showCastDeviceSheet(context);
+    if (picked != null && mounted) {
+      _startCastToDevice(picked);
+    }
+  }
+
+  Future<void> _startCastToDevice(DlnaDevice device) async {
+    final String url = _currentStream?.url ?? '';
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('当前集视频地址正在加载，请稍候...')),
+      );
+      return;
+    }
+
+    _player?.pause();
+    final Duration curPos = _player?.state.position ?? Duration.zero;
+    final bool ok = await DlnaManager.instance.cast(
+      device: device,
+      mediaUrl: url,
+      title: '第$_episode集 ${_activeDrama.title}',
+      posterUrl: _activeDrama.coverUrl,
+      startPosition: curPos,
+    );
+
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('投屏至 ${device.name} 失败，请确认电视与手机在同一 Wi-Fi')),
+      );
+    } else {
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _exitCast() async {
+    final Duration tvPos = DlnaManager.instance.castPositionNotifier.value;
+    await DlnaManager.instance.stop();
+    if (mounted && _player != null) {
+      if (tvPos > Duration.zero) {
+        _player?.seek(tvPos);
+      }
+      _player?.play();
+      setState(() {});
+    }
+  }
 
   /// 桌面 ←/→ 单次快进/快退的步长。
   static const Duration _keyboardSeekStep = Duration(seconds: 5);
@@ -398,6 +486,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     } catch (_) {}
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     _controlsHideTimer?.cancel();
+    _centerHintTimer?.cancel();
     _swipeController.dispose();
     _clearPrefetch();
     _completedSub?.cancel();
@@ -407,6 +496,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _videoParamsSub?.cancel();
     _danmakuPlaying.dispose();
     _danmakuClock.dispose();
+    try {
+      DlnaManager.instance.stop();
+    } catch (_) {}
     // 先同步发出停止命令（立即静音），再销毁；media_kit 的 dispose 是
     // 异步释放 native 资源，直接 dispose 偶尔会残留音频线程出声。
     try {
@@ -425,6 +517,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _positionSub = player.stream.position.listen((Duration position) {
       _danmakuClock.value = position;
       _persistProgress();
+
+      // 智能跳过片尾
+      final int skipOutro = skipOutroSecondsNotifier.value;
+      if (skipOutro > 0 && _autoPlay && !_autoAdvancing && !_loading) {
+        final Duration total = player.state.duration;
+        if (total.inSeconds > skipOutro && position >= total - Duration(seconds: skipOutro)) {
+          _onEpisodeCompleted();
+        }
+      }
     });
     // 弹幕层与播放状态同步：暂停即冻结，恢复后按真实进度继续。
     _danmakuPlaying.value = player.state.playing;
@@ -636,7 +737,30 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         if (target > Duration.zero) {
           await player.seek(target);
         }
+      } else {
+        // 初始开播：检查是否设置了跳过片头
+        final int skipIntro = skipIntroSecondsNotifier.value;
+        if (skipIntro > 0) {
+          await player.seek(Duration(seconds: skipIntro));
+          _showDoubleTapHint('已跳过片头 $skipIntro 秒');
+        }
       }
+
+      // 若当前处于投屏状态，将新流自动推送到电视端
+      if (DlnaManager.instance.isCastingNotifier.value) {
+        final DlnaDevice? dev = DlnaManager.instance.activeDeviceNotifier.value;
+        if (dev != null) {
+          await player.pause();
+          unawaited(DlnaManager.instance.cast(
+            device: dev,
+            mediaUrl: chosen.url,
+            title: '第$_episode集 ${_activeDrama.title}',
+            posterUrl: _activeDrama.coverUrl,
+            startPosition: resumeFrom,
+          ));
+        }
+      }
+
       _currentStream = chosen;
       _preferredDefinition = chosen.definition;
       unawaited(_loadDanmaku(episode.id));
@@ -1460,18 +1584,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// 收藏与详情页 / 追剧页共用同一 store，状态天然联动。
   /// 手机端将高频的倍速 / 选集移到右侧，并隐藏分享。
   Widget _buildActionRail({required bool compact}) {
-    return _ActionRail(
-      onFavorite: _toggleFavorite,
-      onShare: () {},
-      favorited: ref.watch(isFavoriteProvider(_seriesId)),
-      compact: compact,
-      speedLabel: _speedLabel,
-      onSpeed: _showSpeedSheet,
-      onOpenEpisodes: _showEpisodes,
-      danmakuOn: _danmakuOn,
-      onToggleDanmaku: _toggleDanmaku,
-      onDanmakuSettings: () => showDanmakuSettings(context),
-      onMore: _showPlayerActions,
+    return ValueListenableBuilder<bool>(
+      valueListenable: DlnaManager.instance.isCastingNotifier,
+      builder: (BuildContext context, bool isCasting, _) {
+        return _ActionRail(
+          onFavorite: _toggleFavorite,
+          onShare: () {},
+          favorited: ref.watch(isFavoriteProvider(_seriesId)),
+          compact: compact,
+          speedLabel: _speedLabel,
+          onSpeed: _showSpeedSheet,
+          onOpenEpisodes: _showEpisodes,
+          danmakuOn: _danmakuOn,
+          onToggleDanmaku: _toggleDanmaku,
+          onDanmakuSettings: () => showDanmakuSettings(context),
+          onMore: _showPlayerActions,
+          onCast: _handleCastTap,
+          isCasting: isCasting,
+        );
+      },
     );
   }
 
@@ -1570,6 +1701,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _isMobilePlatform ? _onMobileTap : _onDesktopTap,
+                onDoubleTapDown: (TapDownDetails details) {
+                  final double width = MediaQuery.sizeOf(context).width;
+                  final double ratio = details.localPosition.dx / width;
+                  if (ratio < 0.38) {
+                    _seekRelative(-5);
+                  } else if (ratio > 0.62) {
+                    _seekRelative(5);
+                  } else {
+                    _togglePlay();
+                  }
+                },
+                onDoubleTap: () {},
                 // 长按画面：仅移动端临时 2x，松手恢复原倍速。
                 // 桌面端不挂长按，保持原有鼠标/空格交互不变。
                 // 移动端竖屏：长按中间 1/3 弹播放设置，左右两侧仍是临时 2x。
@@ -1963,6 +2106,68 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                   ),
                                 ),
                               ),
+                      // 中央双击快退/快进提示胶囊
+                      if (_centerHintText != null)
+                        Center(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(24),
+                            child: BackdropFilter(
+                              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.68),
+                                  borderRadius: BorderRadius.circular(24),
+                                  border: Border.all(
+                                    color: Colors.white.withValues(alpha: 0.16),
+                                    width: 0.5,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: <Widget>[
+                                    Icon(
+                                      _centerHintText!.contains('快退')
+                                          ? Icons.replay_5_rounded
+                                          : Icons.forward_5_rounded,
+                                      color: Colors.white,
+                                      size: 22,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      _centerHintText!,
+                                      style: const TextStyle(
+                                        fontSize: 14.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      // 投屏遥控浮层（投屏激活时接管界面）
+                      ValueListenableBuilder<bool>(
+                        valueListenable: DlnaManager.instance.isCastingNotifier,
+                        builder: (BuildContext context, bool isCasting, _) {
+                          if (!isCasting) return const SizedBox.shrink();
+                          return Positioned.fill(
+                            child: CastRemoteOverlay(
+                              drama: _activeDrama,
+                              episodeNumber: _episode,
+                              episodeTitle: _titleForEpisode(_episode),
+                              onPlayPrevious: _playPrevious,
+                              onPlayNext: _playNext,
+                              onExitCast: _exitCast,
+                            ),
+                          );
+                        },
+                      ),
                     ],
                   ),
                 ),
@@ -2564,6 +2769,8 @@ class _ActionRail extends StatelessWidget {
     required this.onToggleDanmaku,
     required this.onDanmakuSettings,
     required this.onMore,
+    required this.onCast,
+    this.isCasting = false,
     this.favorited = false,
     this.compact = false,
   });
@@ -2579,6 +2786,8 @@ class _ActionRail extends StatelessWidget {
 
   /// 移动端右栏的「播放设置」入口：稳定打开清晰度/弹幕设置/自动播放/音量。
   final VoidCallback onMore;
+  final VoidCallback onCast;
+  final bool isCasting;
   final bool favorited;
   final bool compact;
 
@@ -2594,6 +2803,44 @@ class _ActionRail extends StatelessWidget {
             icon: Icons.list_rounded,
             label: '选集',
             onTap: onOpenEpisodes,
+          ),
+          const SizedBox(height: 18),
+          _RailAction(
+            icon: Icons.cast_rounded,
+            label: isCasting ? '投屏中' : '投屏',
+            tooltip: '投屏到电视',
+            iconColor: isCasting ? const Color(0xFFFF4D4F) : null,
+            onTap: onCast,
+          ),
+          const SizedBox(height: 18),
+          _RailAction(
+            icon: danmakuOn
+                ? Icons.subtitles_rounded
+                : Icons.subtitles_off_rounded,
+            label: danmakuOn ? '弹幕开' : '弹幕关',
+            onTap: onToggleDanmaku,
+          ),
+          const SizedBox(height: 10),
+          _RailAction(
+            icon: Icons.tune_rounded,
+            label: '设置',
+            tooltip: '播放设置',
+            onTap: onMore,
+          ),
+          const SizedBox(height: 18),
+          _RailAction(
+            icon: favorited ? Icons.star_rounded : Icons.star_border_rounded,
+            label: favorited ? '已收藏' : '收藏',
+            onTap: onFavorite,
+            iconColor: favorited ? const Color(0xFFFFC94D) : null,
+          ),
+        ] else ...<Widget>[
+          _RailAction(
+            icon: Icons.cast_rounded,
+            label: isCasting ? '投屏中' : '投屏',
+            tooltip: '投屏到电视',
+            iconColor: isCasting ? const Color(0xFFFF4D4F) : null,
+            onTap: onCast,
           ),
           const SizedBox(height: 18),
           _RailAction(

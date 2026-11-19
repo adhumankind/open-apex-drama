@@ -60,3 +60,4 @@ dist/
 /android/key.properties
 *.jks
 *.keystore
+worker_index.js

@@ -8,9 +8,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// profile.dart 一致——全局 ValueNotifier + 启动加载 + 写入即通知。
 final ValueNotifier<double> playbackRateNotifier = ValueNotifier<double>(1.0);
 final ValueNotifier<bool> autoPlayNotifier = ValueNotifier<bool>(true);
+final ValueNotifier<int> skipIntroSecondsNotifier = ValueNotifier<int>(0);
+final ValueNotifier<int> skipOutroSecondsNotifier = ValueNotifier<int>(0);
 
 const String _kRateKey = 'playback.rate.v1';
 const String _kAutoPlayKey = 'playback.autoplay.v1';
+const String _kSkipIntroKey = 'playback.skip_intro.v1';
+const String _kSkipOutroKey = 'playback.skip_outro.v1';
 
 /// 本地默认倍速；1.0 表示原速。
 const double kDefaultPlaybackRate = 1.0;
@@ -30,9 +34,19 @@ Future<void> loadPlaybackPrefs() async {
     if (autoPlay != null) {
       autoPlayNotifier.value = autoPlay;
     }
+    final int? intro = prefs.getInt(_kSkipIntroKey);
+    if (intro != null) {
+      skipIntroSecondsNotifier.value = intro;
+    }
+    final int? outro = prefs.getInt(_kSkipOutroKey);
+    if (outro != null) {
+      skipOutroSecondsNotifier.value = outro;
+    }
   } catch (_) {
     playbackRateNotifier.value = kDefaultPlaybackRate;
     autoPlayNotifier.value = true;
+    skipIntroSecondsNotifier.value = 0;
+    skipOutroSecondsNotifier.value = 0;
   }
 }
 
@@ -59,4 +73,22 @@ Future<void> saveAutoPlay(bool autoPlay) async {
   } catch (_) {
     // 落盘失败不影响本次播放。
   }
+}
+
+/// 记住跳过片头秒数
+Future<void> saveSkipIntroSeconds(int seconds) async {
+  skipIntroSecondsNotifier.value = seconds;
+  try {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kSkipIntroKey, seconds);
+  } catch (_) {}
+}
+
+/// 记住跳过片尾秒数
+Future<void> saveSkipOutroSeconds(int seconds) async {
+  skipOutroSecondsNotifier.value = seconds;
+  try {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kSkipOutroKey, seconds);
+  } catch (_) {}
 }
