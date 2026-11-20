@@ -191,6 +191,63 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   String? _centerHintText;
   Timer? _centerHintTimer;
 
+  /// 屏幕防误触锁定状态
+  bool _isScreenLocked = false;
+  bool _lockButtonVisible = true;
+  Timer? _lockButtonHideTimer;
+
+  void _pulseLockButton() {
+    _lockButtonHideTimer?.cancel();
+    if (mounted) {
+      setState(() => _lockButtonVisible = true);
+    }
+    _lockButtonHideTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (mounted && _isScreenLocked) {
+        setState(() => _lockButtonVisible = false);
+      }
+    });
+  }
+
+  void _toggleScreenLock() {
+    setState(() {
+      _isScreenLocked = !_isScreenLocked;
+      if (_isScreenLocked) {
+        _controlsVisible = false;
+        _controlsHideTimer?.cancel();
+        _pulseLockButton();
+        _showDoubleTapHint('屏幕已锁定');
+      } else {
+        _controlsVisible = true;
+        _scheduleControlsHide();
+        _showDoubleTapHint('屏幕已解锁');
+      }
+    });
+    HapticFeedback.mediumImpact();
+  }
+
+  /// 手动旋转屏幕方向（横屏 / 竖屏一键自由切换）
+  void _rotateOrientation() {
+    final Orientation current = MediaQuery.orientationOf(context);
+    if (current == Orientation.portrait) {
+      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+        DeviceOrientation.landscapeRight,
+        DeviceOrientation.landscapeLeft,
+      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      _showDoubleTapHint('已切换为横屏');
+    } else {
+      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+      ]);
+      if (!_isFullscreen) {
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      }
+      _showDoubleTapHint('已切换为竖屏');
+    }
+    HapticFeedback.lightImpact();
+    _scheduleControlsHide();
+  }
+
   void _showDoubleTapHint(String text) {
     _centerHintTimer?.cancel();
     setState(() => _centerHintText = text);
@@ -358,16 +415,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _scheduleControlsHide();
   }
 
-  /// 安排控制层自动隐藏。
-  ///
-  /// 移动端只在全屏播放时隐藏（竖屏播放页保留常显的操作与下一集面板）；
-  /// 桌面沿用鼠标静置隐藏。
+  /// 安排控制层自动隐藏（播放中 3 秒无操作自动收起，避免遮挡剧情）。
   void _scheduleControlsHide() {
     _controlsHideTimer?.cancel();
+    if (_isScreenLocked) return;
     final bool mobile = _isMobilePlatform;
-    if (mobile && !_isWideLayout) {
-      return;
-    }
     final Duration delay = mobile
         ? _mobileControlsAutoHideDelay
         : _controlsAutoHideDelay;
@@ -385,15 +437,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _togglePlay();
   }
 
-  /// 移动端单击画面：控制层隐藏时先唤出（2 秒后再次自动隐藏），
-  /// 已显示时切播放/暂停，与主流短剧一致。
+  /// 移动端单击画面：
+  /// - 屏幕锁定时：唤醒/刷新锁屏按钮，不误触其他控件；
+  /// - 控制层隐藏时：唤出控制层（3 秒后自动收起）；
+  /// - 控制层已显示时：单击立即收起控制层，给用户最纯粹的观影视野。
   void _onMobileTap() {
+    if (_isScreenLocked) {
+      _pulseLockButton();
+      return;
+    }
     if (!_controlsVisible) {
       setState(() => _controlsVisible = true);
       _scheduleControlsHide();
       return;
     }
-    _togglePlay();
+    setState(() => _controlsVisible = false);
+    _controlsHideTimer?.cancel();
   }
 
   /// 播放状态流回调：维护 [_playing] 并驱动控制层自动隐藏。
@@ -473,12 +532,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       if (Platform.isWindows) {
         // 窗口全屏态退出时恢复窗口样式；dispose 不能 await，fire-and-forget。
         windowManager.setFullScreen(false);
-      } else {
-        SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-          DeviceOrientation.portraitUp,
-        ]);
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       }
+    }
+    if (!Platform.isWindows) {
+      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+      ]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     // 退出前的最后一次进度落盘（fire-and-forget，不阻塞销毁）。
     try {
@@ -487,6 +547,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     _controlsHideTimer?.cancel();
     _centerHintTimer?.cancel();
+    _lockButtonHideTimer?.cancel();
     _swipeController.dispose();
     _clearPrefetch();
     _completedSub?.cancel();
@@ -1078,12 +1139,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       return;
     }
     if (_isFullscreen) {
-      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
+      // 智能识别视频原始宽高：竖屏短剧全屏保持竖屏，横屏视频全屏旋转为横屏
+      final int? vWidth = _player?.state.width;
+      final int? vHeight = _player?.state.height;
+      final bool isVideoLandscape = vWidth != null && vHeight != null && vWidth > vHeight;
+
+      if (isVideoLandscape) {
+        SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      } else {
+        SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+          DeviceOrientation.portraitUp,
+        ]);
+      }
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      // 进入全屏即开始计时，播放中 2 秒后收起控制层。
       _scheduleControlsHide();
     } else {
       // 退出全屏回到竖屏：取消计时并保证控制层可见。
@@ -1732,6 +1803,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
           onDanmakuSettings: () => showDanmakuSettings(context),
           onMore: _showPlayerActions,
           onCast: _handleCastTap,
+          onRotate: _rotateOrientation,
           isCasting: isCasting,
         );
       },
@@ -1834,6 +1906,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                 behavior: HitTestBehavior.opaque,
                 onTap: _isMobilePlatform ? _onMobileTap : _onDesktopTap,
                 onDoubleTapDown: (TapDownDetails details) {
+                  if (_isScreenLocked) {
+                    _pulseLockButton();
+                    return;
+                  }
                   final double width = MediaQuery.sizeOf(context).width;
                   final double ratio = details.localPosition.dx / width;
                   if (ratio < 0.38) {
@@ -1851,6 +1927,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                 // 全屏保持原行为（任意位置长按 2x）；桌面不挂长按。
                 onLongPressStart: _isMobilePlatform
                     ? (LongPressStartDetails details) {
+                        if (_isScreenLocked) {
+                          _pulseLockButton();
+                          return;
+                        }
                         final double width =
                             MediaQuery.sizeOf(context).width;
                         if (!isWide &&
@@ -1868,8 +1948,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     ? (_) => _stopHoldSpeed()
                     : null,
                 onLongPressCancel: _isMobilePlatform ? _stopHoldSpeed : null,
-                onHorizontalDragStart: (_) => _startScrub(),
+                onHorizontalDragStart: (_) {
+                  if (_isScreenLocked) {
+                    _pulseLockButton();
+                    return;
+                  }
+                  _startScrub();
+                },
                 onHorizontalDragUpdate: (DragUpdateDetails details) {
+                  if (_isScreenLocked) return;
                   final Size size = MediaQuery.sizeOf(context);
                   _updateScrub(details.delta.dx, size.width);
                 },
@@ -1878,12 +1965,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                 // 移动端竖屏：上下滑跟手切集；全屏/桌面仍走原有手势。
                 // 不在这些平台注册竖向识别器，避免抢走长按 2x。
                 onVerticalDragStart: compactControls
-                    ? _onVerticalDragStart
+                    ? (DragStartDetails details) {
+                        if (_isScreenLocked) {
+                          _pulseLockButton();
+                          return;
+                        }
+                        _onVerticalDragStart(details);
+                      }
                     : null,
                 onVerticalDragUpdate: compactControls
-                    ? _onVerticalDragUpdate
+                    ? (DragUpdateDetails details) {
+                        if (_isScreenLocked) return;
+                        _onVerticalDragUpdate(details);
+                      }
                     : null,
-                onVerticalDragEnd: compactControls ? _onVerticalDragEnd : null,
+                onVerticalDragEnd: compactControls
+                    ? (DragEndDetails details) {
+                        if (_isScreenLocked) return;
+                        _onVerticalDragEnd(details);
+                      }
+                    : null,
                 onVerticalDragCancel: !compactControls
                     ? null
                     : () {
@@ -1895,6 +1996,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                   // 桌面滚轮上下切集（与触摸上/下滑同语义：下滚 = 下一集）。
                   onPointerSignal: _handleWheelSignal,
                   onPointerDown: (PointerDownEvent event) {
+                    if (_isScreenLocked) {
+                      _pulseLockButton();
+                      return;
+                    }
                     _pointerStart = event.position;
                     // 任意点击（含控制栏按钮）都刷新自动隐藏计时，
                     // 避免操作后控制层一直挂着不隐藏。
@@ -1903,6 +2008,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     }
                   },
                   onPointerUp: (PointerUpEvent event) {
+                    if (_isScreenLocked) return;
                     final Offset? start = _pointerStart;
                     _pointerStart = null;
                     if (_isMobilePlatform && !isWide) {
@@ -2238,6 +2344,56 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                   ),
                                 ),
                               ),
+                      // 悬浮屏幕防误触锁定按钮（屏幕左侧居中）
+                      if (_isMobilePlatform)
+                        Positioned(
+                          left: 16,
+                          top: 0,
+                          bottom: 0,
+                          child: Center(
+                            child: AnimatedOpacity(
+                              duration: const Duration(milliseconds: 240),
+                              opacity: _isScreenLocked
+                                  ? (_lockButtonVisible ? 0.92 : 0.22)
+                                  : (_controlsVisible ? 0.88 : 0.0),
+                              child: IgnorePointer(
+                                ignoring: !_isScreenLocked && !_controlsVisible,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: _toggleScreenLock,
+                                  child: Container(
+                                    width: 44,
+                                    height: 44,
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withValues(alpha: 0.58),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white.withValues(alpha: 0.22),
+                                        width: 0.8,
+                                      ),
+                                      boxShadow: const <BoxShadow>[
+                                        BoxShadow(
+                                          color: Colors.black26,
+                                          blurRadius: 8,
+                                          offset: Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Icon(
+                                      _isScreenLocked
+                                          ? Icons.lock_rounded
+                                          : Icons.lock_open_rounded,
+                                      color: _isScreenLocked
+                                          ? const Color(0xFFFF4D4F)
+                                          : Colors.white,
+                                      size: 22,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       // 屏幕亮度调暗蒙层（夜间观影防刺眼保护眼睛）
                       if (_screenBrightness < 0.99)
                         Positioned.fill(
@@ -2913,6 +3069,7 @@ class _ActionRail extends StatelessWidget {
     required this.onDanmakuSettings,
     required this.onMore,
     required this.onCast,
+    required this.onRotate,
     this.isCasting = false,
     this.favorited = false,
     this.compact = false,
@@ -2930,6 +3087,7 @@ class _ActionRail extends StatelessWidget {
   /// 移动端右栏的「播放设置」入口：稳定打开清晰度/弹幕设置/自动播放/音量。
   final VoidCallback onMore;
   final VoidCallback onCast;
+  final VoidCallback onRotate;
   final bool isCasting;
   final bool favorited;
   final bool compact;
@@ -2954,6 +3112,13 @@ class _ActionRail extends StatelessWidget {
             tooltip: '投屏到电视',
             iconColor: isCasting ? const Color(0xFFFF4D4F) : null,
             onTap: onCast,
+          ),
+          const SizedBox(height: 18),
+          _RailAction(
+            icon: Icons.screen_rotation_rounded,
+            label: '旋转',
+            tooltip: '旋转屏幕',
+            onTap: onRotate,
           ),
           const SizedBox(height: 18),
           _RailAction(
@@ -2984,6 +3149,13 @@ class _ActionRail extends StatelessWidget {
             tooltip: '投屏到电视',
             iconColor: isCasting ? const Color(0xFFFF4D4F) : null,
             onTap: onCast,
+          ),
+          const SizedBox(height: 18),
+          _RailAction(
+            icon: Icons.screen_rotation_rounded,
+            label: '旋转',
+            tooltip: '旋转屏幕',
+            onTap: onRotate,
           ),
           const SizedBox(height: 18),
           _RailAction(
