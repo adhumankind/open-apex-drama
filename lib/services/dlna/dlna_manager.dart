@@ -603,13 +603,16 @@ class DlnaManager {
     required String url,
     String posterUrl = '',
   }) {
+    final String albumArt = posterUrl.isNotEmpty
+        ? '&lt;upnp:albumArtURI&gt;${_escapeXml(posterUrl)}&lt;/upnp:albumArtURI&gt;'
+        : '';
     return '&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
         'xmlns:dc="http://purl.org/dc/elements/1.1/" '
         'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"&gt;'
         '&lt;item id="0" parentID="-1" restricted="1"&gt;'
         '&lt;dc:title&gt;${_escapeXml(title)}&lt;/dc:title&gt;'
         '&lt;upnp:class&gt;object.item.videoItem&lt;/upnp:class&gt;'
-        if (posterUrl.isNotEmpty) '&lt;upnp:albumArtURI&gt;${_escapeXml(posterUrl)}&lt;/upnp:albumArtURI&gt;'
+        '$albumArt'
         '&lt;res protocolInfo="http-get:*:video/mp4:*"&gt;${_escapeXml(url)}&lt;/res&gt;'
         '&lt;/item&gt;&lt;/DIDL-Lite&gt;';
   }
