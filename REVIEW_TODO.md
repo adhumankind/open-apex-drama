@@ -39,7 +39,7 @@
   - 修改/瘦身：`lib/screens/player_screen.dart`、`lib/widgets/player_actions_sheet.dart`、`.github/workflows/release.yml`、`pubspec.yaml`
 - **验收标准**：成功合入上游最新提交并保持 `flutter analyze` 0 error；`git diff upstream/master -- lib/screens/player_screen.dart` 净改动行数大幅收敛至极薄钩子。
 
-### [ ] P0-2：彻底修通双保险投屏（重构 DLNA 引擎五连杀 Bug + 集成 iOS 原生 AirPlay）
+### [-] P0-2：彻底修通双保险投屏（用户已确认改用系统屏幕镜像，本项跳过）
 - **实测根因定位**：
   1. `dlna_manager.dart:204-215` 一次性并发 `254×5=1,270` 个 Socket，瞬间打爆 iOS 256 FD 软上限（`EMFILE`）；
   2. `dlna_manager.dart:160-176` 假预热未发包无法弹 iOS 本地网络授权；`187-196` 网卡选择未优先 `en0` 易误扫 VPN/蜂窝网段；`220` 写死 `/description.xml` 漏掉小米电视常见路径；
@@ -61,7 +61,7 @@
   - `lib/ios_ext/`（投屏调度处）
 - **验收标准**：真机无 FD 耗尽报错，稳定发现爱奇艺电视果与小米电视，投屏后画面持续播放不断流且拖动进度条（Seek）正常响应，AirPlay 路由面板可正常唤起系统设备列表。
 
-### [ ] P0-3：修复播放器布局崩坏 + 落实 4B 单击播/停手感 + 消灭手势穿透与流泄漏
+### [x] P0-3：修复播放器布局崩坏 + 落实 4B 单击播/停手感 + 消灭手势穿透与流泄漏
 - **实测根因定位**：
   - `player_screen.dart:1871-1875` `isWide = _isFullscreen || orientation == landscape` 导致竖屏短剧点全屏后被误判为桌面宽屏，底部塞进 9 控件溢出、右侧栏变成桌面分支（冒出空壳分享按钮）、竖向滑动手势全部失效；
   - `player_screen.dart:3097-3190` `_ActionRail` 未包滚动容器，iPhone 横屏（390px 高度）必然纵向溢出；
@@ -77,7 +77,7 @@
   - `lib/screens/player_screen.dart`、`lib/ios_ext/player_ios_ext.dart`
 - **验收标准**：竖屏全屏与横屏播放均零 `RenderFlex overflow`；单击即时播/停；播放 3 秒控件自动隐藏；投屏时操作遥控器绝不唤醒手机本地声音。
 
-### [ ] P0-4：重做「红宝石 + 红樱桃 + 视频播放」满版高定 App Icon
+### [x] P0-4：重做「红宝石 + 红樱桃 + 视频播放」满版高定 App Icon
 - **改动目标**：
   1. 生成 1024×1024 纯净满版（Full-Bleed，无任何摄影棚地面、白边或外部背景环境）的「红宝石 + 红樱桃 + 视频播放三角」组合图标母版（RGB 无 Alpha 通道）；
   2. 通过 `tool/generate_ios_icons.py` 全套切片覆盖 `ios/Runner/Assets.xcassets/AppIcon.appiconset/` 全部 16 档分辨率，并同步输出至 `assets/images/ios_logo.png`。
@@ -86,7 +86,7 @@
   - `assets/images/ios_logo.png`、`tool/generate_ios_icons.py`
 - **验收标准**：iPhone 桌面图标辨识度高、满版无黑边/白边、视觉融合红宝石质感 + 樱桃造型 + 播放符号。
 
-### [ ] P0-5：修复 iOS 更新器误下 APK + 锁定 CI 内核版本 + 自动生成自签一键更新源（`apps.json`）
+### [x] P0-5：修复 iOS 更新器误下 APK + 锁定 CI 内核版本（精简版：跳过订阅源，保留 iOSGods App+ 手动自签）
 - **实测根因定位**：
   - `update_service.dart:337-344` 未区分 iOS，上游发版后 iOS 启动强制弹窗下载 Android `.apk`；
   - `.github/workflows/build_ios.yml:38-40` 直接 clone `openhongguo` 最新 `main` 覆盖 `pubspec.yaml:23` 锁定的 `ecbd85e`，存在 ABI 漂移崩溃隐患；
@@ -130,7 +130,7 @@
 - **改动目标**：利用 `Info.plist` 已开启的 `UIBackgroundModes: audio`，接入 iOS 锁屏/灵动岛媒体信息展示（剧名、集数、封面）与上一集/下一集/播放暂停线控指令。
 - **涉及文件**：`ios/Runner/` 原生音频会话桥接、`lib/ios_ext/`。
 
-### [ ] P2-2：接入 Shorebird Code Push（纯 Dart 改动免签静默热更）
+### [x] P2-2：接入 Shorebird Code Push（纯 Dart 改动免签静默热更，已提前落地）
 - **改动目标**：待用户确认注册 Shorebird 账号并配置 `SHOREBIRD_TOKEN` Secret 后，在 `build_ios.yml` 集成 `shorebird release ios` 与 `shorebird patch ios`，使后续纯 Dart UI/交互微调无需重签 IPA 即可静默生效（原生 Go SDK 升级仍自动走 P0-5 软件源一键覆盖）。
 - **涉及文件**：`.github/workflows/build_ios.yml`、`shorebird.yaml`（新建）。
 

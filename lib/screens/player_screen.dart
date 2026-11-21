@@ -103,6 +103,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<bool>? _playingSub;
+  StreamSubscription<PlayerLog>? _logSub;
 
   /// 复用预取地址开流时的一次性错误监听：地址过期时丢弃缓存重试一次。
   StreamSubscription<String>? _cachedOpenErrorSub;
@@ -254,13 +255,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   /// 控制层自动隐藏延时：桌面鼠标静置 3 秒；移动端全屏 2 秒。
   static const Duration _controlsAutoHideDelay = Duration(seconds: 3);
-  static const Duration _mobileControlsAutoHideDelay = Duration(seconds: 2);
+  static const Duration _mobileControlsAutoHideDelay = Duration(seconds: 3);
   Timer? _controlsHideTimer;
   bool _playing = false;
 
-  /// 当前是否横屏全屏布局（全屏请求或物理旋转任一成立）。
+  /// 当前是否横屏全屏布局（桌面全屏或物理横屏）。
   bool get _isWideLayout =>
-      _isFullscreen ||
+      (defaultTargetPlatform == TargetPlatform.windows && _isFullscreen) ||
       MediaQuery.orientationOf(context) == Orientation.landscape;
 
   /// 是否走移动端竖屏播放布局。
@@ -307,14 +308,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _togglePlay();
   }
 
-  /// 移动端单击画面：控制层隐藏时先唤出（2 秒后再次自动隐藏），
-  /// 已显示时切播放/暂停，与主流短剧一致。
+  /// 移动端单击画面：直接切换播放/暂停（暂停常显控件，播放中 3 秒自动隐藏）。
   void _onMobileTap() {
-    if (!_controlsVisible) {
-      setState(() => _controlsVisible = true);
-      _scheduleControlsHide();
-      return;
-    }
     _togglePlay();
   }
 
@@ -378,7 +373,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _observeProgress(player);
     // 音轨诊断：mpv 的音频输出/解码报错只会出现在日志里，静默失败时
     // 表现为「有画面没声音」，因此在 debug 下转发出来便于排查。
-    player.stream.log.listen((PlayerLog event) {
+    _logSub?.cancel();
+    _logSub = player.stream.log.listen((PlayerLog event) {
       if (event.level.contains('error')) {
         debugPrint('[player-audio][${event.level}] ${event.text}');
         _maybeFallbackDecode(event.text);
@@ -420,6 +416,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     try {
       await _completedSub?.cancel();
       _completedSub = null;
+      await _logSub?.cancel();
+      _logSub = null;
       try {
         await player.dispose();
       } catch (_) {
@@ -479,6 +477,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _playingSub?.cancel();
     _cachedOpenErrorSub?.cancel();
     _videoParamsSub?.cancel();
+    _logSub?.cancel();
     _danmakuPlaying.dispose();
     _danmakuClock.dispose();
     _iosExt.dispose();
@@ -812,6 +811,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     try {
       await _completedSub?.cancel();
       _completedSub = null;
+      await _logSub?.cancel();
+      _logSub = null;
       try {
         await player.dispose();
       } catch (_) {
@@ -1544,19 +1545,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     rail = _iosExt.wrapActionRail(context, rail, _currentStream?.url ?? '', _player, _episode, _activeDrama, _isFullscreen, _scheduleControlsHide);
     // 竖屏胶囊容器：半透明深底 + 细描边，让按钮组在画面上是一个
     // 悬浮工具条而不是散落的大字按钮；横屏（compact=false）保持原样。
-    if (!compact) {
-      return rail;
-    }
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0x8C141418),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0x1FFFFFFF)),
+    final Widget body = !compact
+        ? rail
+        : DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0x8C141418),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0x1FFFFFFF)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+              child: rail,
+            ),
+          );
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: (MediaQuery.sizeOf(context).height - 80).clamp(120.0, 900.0),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-        child: rail,
-      ),
+      child: SingleChildScrollView(child: body),
     );
   }
 
@@ -1618,9 +1624,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     // 横屏布局跟随实际屏幕方向：全屏按钮（SystemChrome 请求）与物理旋转
     // （系统自动旋转）任一生效即采用横屏布局，避免部分设备方向请求被
     // 系统忽略时竖屏锚点把操作栏顶到画面上半部。
-    final bool isWide =
-        _isFullscreen ||
-        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final bool isWide = _isWideLayout;
     // 移动端竖屏：底部只留进度 + 全屏，传输按钮交给点按/滑动。
     final bool compactControls = !isWide && _isMobilePlatform;
     final double screenHeight = MediaQuery.sizeOf(context).height;
@@ -1655,8 +1659,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _isMobilePlatform ? _onMobileTap : _onDesktopTap,
-                onDoubleTapDown: (TapDownDetails d) => _iosExt.onDoubleTapDown(context, d, _player, () => _persistProgress(force: true), _togglePlay),
-                onDoubleTap: () {},
                 // 长按画面：仅移动端临时 2x，松手恢复原倍速。
                 // 桌面端不挂长按，保持原有鼠标/空格交互不变。
                 // 移动端竖屏：长按中间 1/3 弹播放设置，左右两侧仍是临时 2x。

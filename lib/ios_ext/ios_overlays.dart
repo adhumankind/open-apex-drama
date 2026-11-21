@@ -121,7 +121,7 @@ class IosPlayerOverlayStack extends StatelessWidget {
     required this.isScreenLocked,
     required this.lockButtonVisible,
     required this.screenBrightness,
-    required this.centerHintText,
+    required this.centerHint,
     required this.isMobile,
     required this.controlsVisible,
     required this.drama,
@@ -139,7 +139,7 @@ class IosPlayerOverlayStack extends StatelessWidget {
   final bool Function() isScreenLocked;
   final bool Function() lockButtonVisible;
   final double Function() screenBrightness;
-  final String? Function() centerHintText;
+  final ({IconData icon, String text})? Function() centerHint;
   final bool isMobile;
   final bool controlsVisible;
   final Drama drama;
@@ -164,7 +164,7 @@ class IosPlayerOverlayStack extends StatelessWidget {
               final bool locked = isScreenLocked();
               final bool lockVisible = lockButtonVisible();
               final double brightness = screenBrightness();
-              final String? hint = centerHintText();
+              final ({IconData icon, String text})? hint = centerHint();
 
               return Stack(
                 fit: StackFit.expand,
@@ -265,15 +265,13 @@ class IosPlayerOverlayStack extends StatelessWidget {
                                   mainAxisSize: MainAxisSize.min,
                                   children: <Widget>[
                                     Icon(
-                                      hint.contains('快退')
-                                          ? Icons.replay_5_rounded
-                                          : Icons.forward_5_rounded,
+                                      hint.icon,
                                       color: Colors.white,
                                       size: 22,
                                     ),
                                     const SizedBox(width: 8),
                                     Text(
-                                      hint,
+                                      hint.text,
                                       style: const TextStyle(
                                         fontSize: 14.5,
                                         fontWeight: FontWeight.w600,

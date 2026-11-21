@@ -22,7 +22,7 @@ class PlayerIosExt extends ChangeNotifier {
   bool _lockButtonVisible = true;
   Timer? _lockButtonHideTimer;
 
-  String? _centerHintText;
+  ({IconData icon, String text})? _centerHint;
   Timer? _centerHintTimer;
 
   int _verticalDragMode = 0; // 0: 上下滑切集, 1: 左边缘亮度, 2: 右边缘音量
@@ -36,13 +36,13 @@ class PlayerIosExt extends ChangeNotifier {
     }
   }
 
-  void showHint(String text) {
+  void showHint(String text, {IconData icon = Icons.info_outline_rounded}) {
     _centerHintTimer?.cancel();
-    _centerHintText = text;
+    _centerHint = (icon: icon, text: text);
     _notify();
     _centerHintTimer = Timer(const Duration(milliseconds: 900), () {
       if (!_disposed) {
-        _centerHintText = null;
+        _centerHint = null;
         _notify();
       }
     });
@@ -65,10 +65,10 @@ class PlayerIosExt extends ChangeNotifier {
     if (_isScreenLocked) {
       onSetControls(false);
       pulseLockButton();
-      showHint('屏幕已锁定');
+      showHint('屏幕已锁定', icon: Icons.lock_rounded);
     } else {
       onSetControls(true);
-      showHint('屏幕已解锁');
+      showHint('屏幕已解锁', icon: Icons.lock_open_rounded);
     }
     HapticFeedback.mediumImpact();
     _notify();
@@ -86,7 +86,7 @@ class PlayerIosExt extends ChangeNotifier {
         DeviceOrientation.landscapeLeft,
       ]);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      showHint('已切换为横屏');
+      showHint('已切换为横屏', icon: Icons.screen_rotation_rounded);
     } else {
       SystemChrome.setPreferredOrientations(<DeviceOrientation>[
         DeviceOrientation.portraitUp,
@@ -94,7 +94,7 @@ class PlayerIosExt extends ChangeNotifier {
       if (!isFullscreen) {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       }
-      showHint('已切换为竖屏');
+      showHint('已切换为竖屏', icon: Icons.screen_rotation_rounded);
     }
     HapticFeedback.lightImpact();
     onAfter();
@@ -130,7 +130,10 @@ class PlayerIosExt extends ChangeNotifier {
     player.seek(clamped);
     onPersist();
     HapticFeedback.lightImpact();
-    showHint(seconds > 0 ? '+5s 快进' : '-5s 快退');
+    showHint(
+      seconds > 0 ? '+5s 快进' : '-5s 快退',
+      icon: seconds > 0 ? Icons.forward_5_rounded : Icons.replay_5_rounded,
+    );
   }
 
   void onDoubleTapDown(
@@ -242,7 +245,7 @@ class PlayerIosExt extends ChangeNotifier {
       final int skipIntro = skipIntroSecondsNotifier.value;
       if (skipIntro > 0) {
         await player.seek(Duration(seconds: skipIntro));
-        showHint('已跳过片头 $skipIntro 秒');
+        showHint('已跳过片头 $skipIntro 秒', icon: Icons.fast_forward_rounded);
       }
     }
     if (DlnaManager.instance.isCastingNotifier.value) {
@@ -298,14 +301,20 @@ class PlayerIosExt extends ChangeNotifier {
     if (_verticalDragMode == 1) {
       final double delta = -details.delta.dy / 250.0;
       _screenBrightness = (_screenBrightness + delta).clamp(0.2, 1.0);
-      showHint('☀️ 亮度 ${(_screenBrightness * 100).toInt()}%');
+      showHint(
+        '亮度 ${(_screenBrightness * 100).toInt()}%',
+        icon: Icons.brightness_6_rounded,
+      );
       return true;
     }
     if (_verticalDragMode == 2) {
       final double delta = -details.delta.dy / 250.0;
       final double next = (currentVolume + delta).clamp(0.0, 1.0);
       setVolume(next);
-      showHint(next <= 0.01 ? '🔇 静音' : '🔊 音量 ${(next * 100).toInt()}%');
+      showHint(
+        next <= 0.01 ? '静音' : '音量 ${(next * 100).toInt()}%',
+        icon: next <= 0.01 ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+      );
       return true;
     }
     return false;
@@ -380,7 +389,7 @@ class PlayerIosExt extends ChangeNotifier {
       isScreenLocked: () => _isScreenLocked,
       lockButtonVisible: () => _lockButtonVisible,
       screenBrightness: () => _screenBrightness,
-      centerHintText: () => _centerHintText,
+      centerHint: () => _centerHint,
       isMobile: isMobile,
       controlsVisible: controlsVisible,
       drama: drama,

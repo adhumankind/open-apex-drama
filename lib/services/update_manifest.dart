@@ -78,7 +78,11 @@ class UpdateManifest {
     required String repo,
     required String version,
     required bool windows,
+    bool ios = false,
   }) {
+    if (ios) {
+      return 'https://github.com/$owner/$repo/releases/download/v$version/HongGuo-AdiBan.ipa';
+    }
     final String file = windows
         ? 'ApexDrama-$version-windows-x64-setup.exe'
         : 'ApexDrama-v$version-arm64-v8a.apk';
@@ -140,7 +144,10 @@ class UpdateManifestEntry {
   final Map<String, String> downloads;
 
   /// 当前平台的显式下载地址；没有配置时返回 null，由调用方按命名规则拼接。
-  String? downloadFor({required bool windows}) {
+  String? downloadFor({required bool windows, bool ios = false}) {
+    if (ios) {
+      return downloads['ios'];
+    }
     return downloads[windows ? 'windows-x64' : 'android-arm64'];
   }
 }
