@@ -82,13 +82,20 @@ jobs:
           assert b'multi_video_model' in data, 'ERROR: multi_video_model missing!'
           "
 
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+
       - name: Set up Shorebird
         uses: shorebirdtech/setup-shorebird@v1
         with:
           cache: true
 
-      - name: Install Flutter dependencies via Shorebird
-        run: shorebird flutter pub get
+      - name: Install Flutter dependencies
+        run: flutter pub get
 
       - name: Patch cached openhongguo with pinned OpenhongguoCore
         run: |
@@ -107,7 +114,7 @@ jobs:
           cd ..
 
       - name: Analyze Flutter
-        run: shorebird flutter analyze
+        run: flutter analyze
 
       - name: Shorebird Release iOS (No Codesign)
         if: steps.meta.outputs.mode == 'release'
