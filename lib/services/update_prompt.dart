@@ -81,15 +81,16 @@ class UpdatePrompt {
                 mode: LaunchMode.externalApplication,
               );
             },
-            child: const Text('网页下载'),
+            child: Text(Platform.isIOS ? '前往下载 IPA' : '网页下载'),
           ),
-          FilledButton(
-            onPressed: () {
-              Navigator.of(dialogContext).pop();
-              _downloadInApp(context, update!, snack);
-            },
-            child: const Text('直连下载'),
-          ),
+          if (!Platform.isIOS)
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                _downloadInApp(context, update!, snack);
+              },
+              child: const Text('直连下载'),
+            ),
         ],
       ),
     );

@@ -14,9 +14,11 @@ class UpdateService {
   const UpdateService._();
 
   static const String _owner = 'Sxuan-Coder';
+  static const String _iosOwner = 'adhumankind';
   static const String _repo = 'open-apex-drama';
-  static const String _latestUrl =
-      'https://api.github.com/repos/$_owner/$_repo/releases/latest';
+  static String get _effectiveOwner => Platform.isIOS ? _iosOwner : _owner;
+  static String get _latestUrl =>
+      'https://api.github.com/repos/$_effectiveOwner/$_repo/releases/latest';
 
   /// GitHub 匿名 API 限流：每小时每 IP 只有 60 次。启动、手动点击、
   /// 反复重试都会各自消耗一次，共享出口（公司/运营商 NAT/代理）很容易打满，
@@ -170,12 +172,13 @@ class UpdateService {
       version: entry.version,
       notes: entry.notes,
       downloadUrl:
-          entry.downloadFor(windows: windows) ??
+          entry.downloadFor(windows: windows, ios: Platform.isIOS) ??
           UpdateManifest.assetUrl(
-            owner: _owner,
+            owner: _effectiveOwner,
             repo: _repo,
             version: entry.version,
             windows: windows,
+            ios: Platform.isIOS,
           ),
       publishedAt: entry.publishedAt,
     );
@@ -192,7 +195,8 @@ class UpdateService {
     List<String>? injectedUrls,
   ) async {
     final List<String> urls =
-        injectedUrls ?? UpdateManifest.urls(owner: _owner, repo: _repo);
+        injectedUrls ??
+        UpdateManifest.urls(owner: _effectiveOwner, repo: _repo);
     for (final String url in urls) {
       final Map<String, dynamic>? json = await _fetchJson(url);
       if (json != null) {
@@ -338,9 +342,25 @@ class UpdateService {
     if (assets == null || assets.isEmpty) {
       return _releasePageUrl();
     }
+    if (Platform.isIOS) {
+      return _pickIosAssetUrl(assets);
+    }
     return Platform.isWindows
         ? _pickWindowsAssetUrl(assets)
         : _pickAndroidApkUrl(assets);
+  }
+
+  /// iOS 资产筛选：优先 .ipa 文件，未找到时回退至 Release 页面。
+  static String _pickIosAssetUrl(List<dynamic> assets) {
+    for (final dynamic asset in assets) {
+      final Map<String, dynamic> a = asset as Map<String, dynamic>;
+      final String name = ((a['name'] as String?) ?? '').toLowerCase();
+      final String url = (a['browser_download_url'] as String?) ?? '';
+      if (url.isNotEmpty && name.endsWith('.ipa')) {
+        return url;
+      }
+    }
+    return _releasePageUrl();
   }
 
   /// Windows 资产筛选：优先名称含 `windows-x64` 的 zip/msix/exe（发布
@@ -388,7 +408,7 @@ class UpdateService {
   }
 
   static String _releasePageUrl() =>
-      'https://github.com/$_owner/$_repo/releases/latest';
+      'https://github.com/$_effectiveOwner/$_repo/releases/latest';
 }
 
 /// 可用的更新信息。

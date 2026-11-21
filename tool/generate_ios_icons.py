@@ -20,20 +20,21 @@ SPECS = [
     ('Icon-App-1024x1024@1x.png', (1024, 1024)),
 ]
 
-src_path = r'C:\Users\AD\.gemini\antigravity\brain\47c92c70-669b-4aca-bb53-bc99ff148b3c\red_crystal_app_icon_perfect_bleed_1795138607767.jpg'
-master_img = Image.open(src_path).convert('RGB')
-print(f"Master image size: {master_img.size}, mode: {master_img.mode}")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+logo_path = os.path.join(ROOT, 'assets', 'images', 'ios_logo.png')
+master_img = Image.open(logo_path).convert('RGB')
+if master_img.size != (1024, 1024):
+    master_img = master_img.resize((1024, 1024), Image.Resampling.LANCZOS)
+    master_img.save(logo_path, format='PNG')
+print(f'Master image size: {master_img.size}, mode: {master_img.mode}')
 
-iconset_dir = r'd:\zcode项目\红果苹果\ios\Runner\Assets.xcassets\AppIcon.appiconset'
+iconset_dir = os.path.join(
+    ROOT, 'ios', 'Runner', 'Assets.xcassets', 'AppIcon.appiconset'
+)
 os.makedirs(iconset_dir, exist_ok=True)
 
 for filename, size in SPECS:
     resized = master_img.resize(size, Image.Resampling.LANCZOS)
     out_file = os.path.join(iconset_dir, filename)
     resized.save(out_file, format='PNG')
-    print(f"Generated {filename} -> {size}")
-
-# 同步更新应用内 assets/images/logo.png
-logo_path = r'd:\zcode项目\红果苹果\assets\images\logo.png'
-master_img.save(logo_path, format='PNG')
-print(f"Updated application logo at {logo_path}")
+    print(f'Generated {filename} -> {size}')

@@ -1,0 +1,78 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Sync upstream master
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Fetch upstream master
+        id: check
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Sxuan-Coder/open-apex-drama.git || git remote set-url upstream https://github.com/Sxuan-Coder/open-apex-drama.git
+          git fetch upstream master
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "已是上游最新提交，无需同步。"
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "发现上游新提交，准备生成同步分支。"
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream and open or update PR
+        if: steps.check.outputs.has_updates == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git log --oneline HEAD..upstream/master > "$RUNNER_TEMP/upstream_commits.txt"
+          git checkout -B sync/upstream-master
+          if ! git merge --no-edit upstream/master; then
+            echo "::error::同步上游 open-apex-drama/master 时出现冲突，请本地拉取上游并解决冲突。"
+            git diff --name-only --diff-filter=U || true
+            git merge --abort || true
+            exit 1
+          fi
+          git push origin sync/upstream-master --force
+
+          {
+            echo "## 上游同步说明"
+            echo ""
+            echo "本 PR 自动同步 \`Sxuan-Coder/open-apex-drama:master\` 最新提交。"
+            echo "合入 \`master\` 后将自动触发 \`Build iOS (IPA)\` 工作流构建 IPA。"
+            echo ""
+            echo "### 本次包含的上游提交"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/upstream_commits.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/pr_body.md"
+
+          existing_pr="$(gh pr list --head sync/upstream-master --base master --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing_pr" ]; then
+            gh pr edit "$existing_pr" \
+              --title "chore(sync): 同步上游 open-apex-drama 最新提交" \
+              --body-file "$RUNNER_TEMP/pr_body.md"
+          else
+            gh pr create \
+              --base master \
+              --head sync/upstream-master \
+              --title "chore(sync): 同步上游 open-apex-drama 最新提交" \
+              --body-file "$RUNNER_TEMP/pr_body.md"
+          fi

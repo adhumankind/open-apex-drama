@@ -153,9 +153,12 @@ jobs:
             dist/*-windows-x64-setup.exe
           if-no-files-found: error
 
+  # 未签名 iOS 包：只做构建与附带发布，签名由使用者用 AltStore / SideStore /
+  # Sideloadly 完成。iOS 的渲染与加密流解密链路尚未在真机验证，
+  # 发布说明里会明确标注「未经测试」。
   ios:
-    name: Build iOS IPA
-    runs-on: macos-latest
+    name: Build unsigned iOS IPA
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -163,7 +166,18 @@ jobs:
         id: v
         run: |
           tag="${GITHUB_REF_NAME#v}"
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag 必须是 vx.y.z 形式，当前为 ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          IFS=. read -r major minor patch <<< "$tag"
           echo "name=$tag" >> "$GITHUB_OUTPUT"
+          echo "code=$((major * 100 + minor * 10 + patch))" >> "$GITHUB_OUTPUT"
+
+      - name: Sync pubspec version with tag
+        run: |
+          sed -i '' -E "s/^version: .*/version: ${{ steps.v.outputs.name }}+${{ steps.v.outputs.code }}/" pubspec.yaml
+          grep -n '^version:' pubspec.yaml
 
       - uses: subosito/flutter-action@v2
         with:
@@ -171,31 +185,28 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        run: flutter pub get
+      - run: flutter pub get
 
-      - name: Install CocoaPods
-        run: |
-          cd ios
-          pod install
-          cd ..
-
-      - name: Build iOS (No Codesign)
+      - name: Build iOS (release, no codesign)
         run: flutter build ios --release --no-codesign
 
-      - name: Package IPA
+      - name: Stage unsigned IPA
         run: |
-          ver="${{ steps.v.outputs.name }}"
+          set -eu
+          mkdir -p out
+          cd build/ios/iphoneos
+          rm -rf Payload
           mkdir -p Payload
-          cp -r build/ios/iphoneos/Runner.app Payload/
-          mkdir -p dist
-          zip -r -q "dist/HongGuo-AdiBan-v${ver}.ipa" Payload
-          ls -lh dist/
+          cp -r Runner.app Payload/
+          ipa="ApexDrama-${{ steps.v.outputs.name }}_ios_unsigned.ipa"
+          ditto -c -k --sequesterRsrc --keepParent Payload "$ipa"
+          mv "$ipa" "$GITHUB_WORKSPACE/out/"
+          ls -la "$GITHUB_WORKSPACE/out"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ios
-          path: dist/*.ipa
+          path: out/*.ipa
           if-no-files-found: error
 
   publish:
@@ -231,6 +242,23 @@ jobs:
           echo "--- NOTES.md ---"
           cat NOTES.md
 
+      # 固定追加，不依赖 updates.json 是否写了这一节：iOS 包未经真机验证，
+      # 必须在每次发版说明里显式标注，避免被当成可用的正式版本。
+      - name: Append the iOS disclaimer
+        run: |
+          ver="${{ steps.v.outputs.name }}"
+          {
+            echo ""
+            echo "## iOS（未测试）"
+            echo ""
+            echo "\`ApexDrama-${ver}_ios_unsigned.ipa\` 是未签名包，只能用 AltStore /"
+            echo "SideStore / Sideloadly 自签安装。**该版本未经测试**：iOS 上的渲染"
+            echo "（\`vo=libmpv\` 纹理管线 + VideoToolbox）与加密流解密链路尚未在真机"
+            echo "验证过，可能无法播放。Android 与 Windows 用户请忽略这个文件。"
+          } >> NOTES.md
+          echo "--- NOTES.md（含 iOS 说明）---"
+          cat NOTES.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,4 +272,4 @@ jobs:
             dist/ApexDrama-v$ver-armeabi-v7a.apk \
             dist/ApexDrama-$ver-windows-x64-setup.exe \
             dist/ApexDrama-$ver-windows-x64.zip \
-            dist/HongGuo-AdiBan-v$ver.ipa
+            dist/ApexDrama-${ver}_ios_unsigned.ipa

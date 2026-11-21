@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -17,6 +16,7 @@ import '../app_state/sync_settings.dart';
 import '../data/local/watch_store.dart';
 import '../data/remote/openhongguo_service.dart';
 import '../data/repository/repositories.dart';
+import '../ios_ext/player_ios_ext.dart';
 import '../models/danmaku_cue.dart';
 import '../models/drama.dart';
 import '../models/playback.dart';
@@ -29,10 +29,6 @@ import '../widgets/danmaku_layer.dart';
 import '../widgets/danmaku_settings.dart';
 import '../widgets/player_actions_sheet.dart';
 import '../widgets/poster_artwork.dart';
-import '../services/dlna/dlna_device.dart';
-import '../services/dlna/dlna_manager.dart';
-import '../widgets/cast_remote_overlay.dart';
-import '../widgets/dlna_sheet.dart';
 
 Future<void> openPlayer(
   BuildContext context,
@@ -107,6 +103,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<bool>? _playingSub;
+  StreamSubscription<PlayerLog>? _logSub;
 
   /// 复用预取地址开流时的一次性错误监听：地址过期时丢弃缓存重试一次。
   StreamSubscription<String>? _cachedOpenErrorSub;
@@ -138,6 +135,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// 清晰度切换进行中（防重入）。
   bool _switchingQuality = false;
 
+  /// 当前渲染输出模式。Android 默认 mediacodec_embed；解码器起不来时
+  /// 退回 texture（软解码 + 纹理渲染），见 [_rebuildWithSoftwareDecode]。
+  VideoOutputMode _outputMode = defaultVideoOutputMode();
+
+  /// 解码兜底进行中（防重入：兜底只对本页做一次）。
+  bool _decodeFallbackInFlight = false;
+
   late int _episode;
   int _episodeCount = 0;
   List<EpisodeInfo> _episodes = const <EpisodeInfo>[];
@@ -149,6 +153,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   late String _seriesId = widget.drama.id;
 
   bool _autoPlay = autoPlayNotifier.value;
+  late final PlayerIosExt _iosExt = PlayerIosExt();
 
   /// 自然播完自动切集中的防重入（动画期间 completed 可能再次触发）。
   bool _autoAdvancing = false;
@@ -186,146 +191,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// 快进/快退由左右滑动与键盘 ←/→ 承担，长按不再做 10 秒步进。
   bool _holdSpeedActive = false;
   static const double _holdRate = 2.0;
-
-  /// 中央双击快进/快退提示与定时器
-  String? _centerHintText;
-  Timer? _centerHintTimer;
-
-  /// 屏幕防误触锁定状态
-  bool _isScreenLocked = false;
-  bool _lockButtonVisible = true;
-  Timer? _lockButtonHideTimer;
-
-  void _pulseLockButton() {
-    _lockButtonHideTimer?.cancel();
-    if (mounted) {
-      setState(() => _lockButtonVisible = true);
-    }
-    _lockButtonHideTimer = Timer(const Duration(milliseconds: 2500), () {
-      if (mounted && _isScreenLocked) {
-        setState(() => _lockButtonVisible = false);
-      }
-    });
-  }
-
-  void _toggleScreenLock() {
-    setState(() {
-      _isScreenLocked = !_isScreenLocked;
-      if (_isScreenLocked) {
-        _controlsVisible = false;
-        _controlsHideTimer?.cancel();
-        _pulseLockButton();
-        _showDoubleTapHint('屏幕已锁定');
-      } else {
-        _controlsVisible = true;
-        _scheduleControlsHide();
-        _showDoubleTapHint('屏幕已解锁');
-      }
-    });
-    HapticFeedback.mediumImpact();
-  }
-
-  /// 手动旋转屏幕方向（横屏 / 竖屏一键自由切换）
-  void _rotateOrientation() {
-    final Orientation current = MediaQuery.orientationOf(context);
-    if (current == Orientation.portrait) {
-      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-        DeviceOrientation.landscapeRight,
-        DeviceOrientation.landscapeLeft,
-      ]);
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-      _showDoubleTapHint('已切换为横屏');
-    } else {
-      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-        DeviceOrientation.portraitUp,
-      ]);
-      if (!_isFullscreen) {
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      }
-      _showDoubleTapHint('已切换为竖屏');
-    }
-    HapticFeedback.lightImpact();
-    _scheduleControlsHide();
-  }
-
-  void _showDoubleTapHint(String text) {
-    _centerHintTimer?.cancel();
-    setState(() => _centerHintText = text);
-    _centerHintTimer = Timer(const Duration(milliseconds: 900), () {
-      if (mounted) setState(() => _centerHintText = null);
-    });
-  }
-
-  void _seekRelative(int seconds) {
-    final Player? player = _player;
-    if (player == null) return;
-    final Duration current = player.state.position;
-    final Duration total = player.state.duration;
-    final Duration target = current + Duration(seconds: seconds);
-    final Duration clamped = target < Duration.zero
-        ? Duration.zero
-        : (total > Duration.zero && target > total ? total : target);
-    player.seek(clamped);
-    _persistProgress(force: true);
-    HapticFeedback.lightImpact();
-    _showDoubleTapHint(seconds > 0 ? '+5s 快进' : '-5s 快退');
-  }
-
-  Future<void> _handleCastTap() async {
-    final DlnaManager manager = DlnaManager.instance;
-    if (manager.isCastingNotifier.value) {
-      final DlnaDevice? picked = await showCastDeviceSheet(context);
-      if (picked != null && mounted) {
-        _startCastToDevice(picked);
-      }
-      return;
-    }
-
-    final DlnaDevice? picked = await showCastDeviceSheet(context);
-    if (picked != null && mounted) {
-      _startCastToDevice(picked);
-    }
-  }
-
-  Future<void> _startCastToDevice(DlnaDevice device) async {
-    final String url = _currentStream?.url ?? '';
-    if (url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('当前集视频地址正在加载，请稍候...')),
-      );
-      return;
-    }
-
-    _player?.pause();
-    final Duration curPos = _player?.state.position ?? Duration.zero;
-    final bool ok = await DlnaManager.instance.cast(
-      device: device,
-      mediaUrl: url,
-      title: '第$_episode集 ${_activeDrama.title}',
-      posterUrl: _activeDrama.coverUrl,
-      startPosition: curPos,
-    );
-
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('投屏至 ${device.name} 失败，请确认电视与手机在同一 Wi-Fi')),
-      );
-    } else {
-      if (mounted) setState(() {});
-    }
-  }
-
-  Future<void> _exitCast() async {
-    final Duration tvPos = DlnaManager.instance.castPositionNotifier.value;
-    await DlnaManager.instance.stop();
-    if (mounted && _player != null) {
-      if (tvPos > Duration.zero) {
-        _player?.seek(tvPos);
-      }
-      _player?.play();
-      setState(() {});
-    }
-  }
 
   /// 桌面 ←/→ 单次快进/快退的步长。
   static const Duration _keyboardSeekStep = Duration(seconds: 5);
@@ -390,13 +255,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   /// 控制层自动隐藏延时：桌面鼠标静置 3 秒；移动端全屏 2 秒。
   static const Duration _controlsAutoHideDelay = Duration(seconds: 3);
-  static const Duration _mobileControlsAutoHideDelay = Duration(seconds: 2);
+  static const Duration _mobileControlsAutoHideDelay = Duration(seconds: 3);
   Timer? _controlsHideTimer;
   bool _playing = false;
 
-  /// 当前是否横屏全屏布局（全屏请求或物理旋转任一成立）。
+  /// 当前是否横屏全屏布局（桌面全屏或物理横屏）。
   bool get _isWideLayout =>
-      _isFullscreen ||
+      (defaultTargetPlatform == TargetPlatform.windows && _isFullscreen) ||
       MediaQuery.orientationOf(context) == Orientation.landscape;
 
   /// 是否走移动端竖屏播放布局。
@@ -404,9 +269,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   /// 用 [defaultTargetPlatform] 而不是 [Platform.isWindows]：运行时桌面仍然
   /// 走原布局，widget 测试则能直接覆盖移动分支。macOS/Linux 桌面不在
   /// 发版范围，按桌面处理。
+  /// 平板（shortestSide ≥ 600）不按手机处理：与 Windows 端一致走桌面
+  /// 布局——底部完整控制行、下一集面板，不做胶囊右栏与竖屏手势。
   bool get _isMobilePlatform =>
-      defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.iOS;
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS) &&
+      MediaQuery.sizeOf(context).shortestSide < 600;
 
   void _onMouseHover(PointerEvent event) {
     if (!_controlsVisible) {
@@ -415,10 +283,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _scheduleControlsHide();
   }
 
-  /// 安排控制层自动隐藏（播放中 3 秒无操作自动收起，避免遮挡剧情）。
+  /// 安排控制层自动隐藏。
+  ///
+  /// 移动端与桌面统一：播放中 2 秒（桌面 3 秒）后隐藏；
+  /// 暂停时常显（见 [_onPlayingChanged]），拖进度中不隐藏（见定时器回调）。
   void _scheduleControlsHide() {
     _controlsHideTimer?.cancel();
-    if (_isScreenLocked) return;
+    if (_iosExt.isScreenLocked) return;
     final bool mobile = _isMobilePlatform;
     final Duration delay = mobile
         ? _mobileControlsAutoHideDelay
@@ -437,22 +308,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _togglePlay();
   }
 
-  /// 移动端单击画面：
-  /// - 屏幕锁定时：唤醒/刷新锁屏按钮，不误触其他控件；
-  /// - 控制层隐藏时：唤出控制层（3 秒后自动收起）；
-  /// - 控制层已显示时：单击立即收起控制层，给用户最纯粹的观影视野。
+  /// 移动端单击画面：直接切换播放/暂停（暂停常显控件，播放中 3 秒自动隐藏）。
   void _onMobileTap() {
-    if (_isScreenLocked) {
-      _pulseLockButton();
-      return;
-    }
-    if (!_controlsVisible) {
-      setState(() => _controlsVisible = true);
-      _scheduleControlsHide();
-      return;
-    }
-    setState(() => _controlsVisible = false);
-    _controlsHideTimer?.cancel();
+    _togglePlay();
   }
 
   /// 播放状态流回调：维护 [_playing] 并驱动控制层自动隐藏。
@@ -504,7 +362,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _player = player;
     _controller = VideoController(
       player,
-      configuration: videoOutputConfiguration(defaultVideoOutputMode()),
+      configuration: videoOutputConfiguration(_outputMode),
     );
     _completedSub = player.stream.completed.listen((bool done) {
       // 开流中 / 切档中不重复响应，避免 completed 连发时连跳两集。
@@ -515,11 +373,78 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _observeProgress(player);
     // 音轨诊断：mpv 的音频输出/解码报错只会出现在日志里，静默失败时
     // 表现为「有画面没声音」，因此在 debug 下转发出来便于排查。
-    player.stream.log.listen((PlayerLog event) {
+    _logSub?.cancel();
+    _logSub = player.stream.log.listen((PlayerLog event) {
       if (event.level.contains('error')) {
         debugPrint('[player-audio][${event.level}] ${event.text}');
+        _maybeFallbackDecode(event.text);
       }
     });
+  }
+
+  /// mediacodec_embed 硬解起不来时退回软解码。
+  ///
+  /// 现象：模拟器（及缺少 HEVC 硬解的低端真机）上 MediaCodec 初始化失败，
+  /// mpv 报 `hevc_mediacodec: MediaCodec 0x0 failed to start`，表现为音频
+  /// 与字幕正常、画面全黑。此时换到 texture 模式（media_kit 软渲染管线）
+  /// 重新开流即可出画。
+  void _maybeFallbackDecode(String text) {
+    if (_outputMode != VideoOutputMode.embed) {
+      return; // 已经是软解码管线，不再重复兜底
+    }
+    if (_decodeFallbackInFlight || !mounted) {
+      return;
+    }
+    if (!text.contains('mediacodec') || !text.contains('failed to start')) {
+      return;
+    }
+    _decodeFallbackInFlight = true;
+    unawaited(_rebuildWithSoftwareDecode());
+  }
+
+  /// 用 texture 模式重建播放器，并接着当前进度重开同一流。
+  Future<void> _rebuildWithSoftwareDecode() async {
+    final Player? player = _player;
+    final StreamInfo? stream = _currentStream;
+    if (player == null || stream == null) {
+      _decodeFallbackInFlight = false;
+      return;
+    }
+    final Duration resume = player.state.position;
+    final bool wasPlaying = player.state.playing;
+    debugPrint('[player] mediacodec 启动失败，退回软解码渲染');
+    try {
+      await _completedSub?.cancel();
+      _completedSub = null;
+      await _logSub?.cancel();
+      _logSub = null;
+      try {
+        await player.dispose();
+      } catch (_) {
+        // 旧 Player 销毁失败不阻塞重建。
+      }
+      _player = null;
+      _controller = null;
+      _outputMode = VideoOutputMode.texture;
+      if (mounted) {
+        setState(() {});
+      }
+      _buildPlayer();
+      _decodeFallbackInFlight = false;
+      await _boot(
+        stream: stream,
+        resumeFrom: resume,
+        playWhenReady: wasPlaying,
+      );
+    } catch (_) {
+      _decodeFallbackInFlight = false;
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = '播放器初始化失败';
+        });
+      }
+    }
   }
 
   @override
@@ -532,13 +457,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       if (Platform.isWindows) {
         // 窗口全屏态退出时恢复窗口样式；dispose 不能 await，fire-and-forget。
         windowManager.setFullScreen(false);
+      } else {
+        SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+          DeviceOrientation.portraitUp,
+        ]);
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       }
-    }
-    if (!Platform.isWindows) {
-      SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-        DeviceOrientation.portraitUp,
-      ]);
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     // 退出前的最后一次进度落盘（fire-and-forget，不阻塞销毁）。
     try {
@@ -546,8 +470,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     } catch (_) {}
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     _controlsHideTimer?.cancel();
-    _centerHintTimer?.cancel();
-    _lockButtonHideTimer?.cancel();
     _swipeController.dispose();
     _clearPrefetch();
     _completedSub?.cancel();
@@ -555,11 +477,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _playingSub?.cancel();
     _cachedOpenErrorSub?.cancel();
     _videoParamsSub?.cancel();
+    _logSub?.cancel();
     _danmakuPlaying.dispose();
     _danmakuClock.dispose();
-    try {
-      DlnaManager.instance.stop();
-    } catch (_) {}
+    _iosExt.dispose();
     // 先同步发出停止命令（立即静音），再销毁；media_kit 的 dispose 是
     // 异步释放 native 资源，直接 dispose 偶尔会残留音频线程出声。
     try {
@@ -578,15 +499,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     _positionSub = player.stream.position.listen((Duration position) {
       _danmakuClock.value = position;
       _persistProgress();
-
-      // 智能跳过片尾
-      final int skipOutro = skipOutroSecondsNotifier.value;
-      if (skipOutro > 0 && _autoPlay && !_autoAdvancing && !_loading) {
-        final Duration total = player.state.duration;
-        if (total.inSeconds > skipOutro && position >= total - Duration(seconds: skipOutro)) {
-          _onEpisodeCompleted();
-        }
-      }
+      if (_iosExt.shouldSkipOutro(position, player.state.duration, _autoPlay && !_autoAdvancing && !_loading)) _onEpisodeCompleted();
     });
     // 弹幕层与播放状态同步：暂停即冻结，恢复后按真实进度继续。
     _danmakuPlaying.value = player.state.playing;
@@ -798,30 +711,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
         if (target > Duration.zero) {
           await player.seek(target);
         }
-      } else {
-        // 初始开播：检查是否设置了跳过片头
-        final int skipIntro = skipIntroSecondsNotifier.value;
-        if (skipIntro > 0) {
-          await player.seek(Duration(seconds: skipIntro));
-          _showDoubleTapHint('已跳过片头 $skipIntro 秒');
-        }
       }
-
-      // 若当前处于投屏状态，将新流自动推送到电视端
-      if (DlnaManager.instance.isCastingNotifier.value) {
-        final DlnaDevice? dev = DlnaManager.instance.activeDeviceNotifier.value;
-        if (dev != null) {
-          await player.pause();
-          unawaited(DlnaManager.instance.cast(
-            device: dev,
-            mediaUrl: chosen.url,
-            title: '第$_episode集 ${_activeDrama.title}',
-            posterUrl: _activeDrama.coverUrl,
-            startPosition: resumeFrom,
-          ));
-        }
-      }
-
+      await _iosExt.onStreamOpened(player, chosen.url, resumeFrom, _episode, _activeDrama);
       _currentStream = chosen;
       _preferredDefinition = chosen.definition;
       unawaited(_loadDanmaku(episode.id));
@@ -920,6 +811,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     try {
       await _completedSub?.cancel();
       _completedSub = null;
+      await _logSub?.cancel();
+      _logSub = null;
       try {
         await player.dispose();
       } catch (_) {
@@ -984,107 +877,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   /// 本集自然播完：移动端竖屏先走与手动上滑一致的上滑动画，再切集；
   /// 其余场景（桌面 / 全屏 / 最后一集）沿用直接切集。
-  void _showSeriesFinishedSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (BuildContext ctx) {
-        return ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-              decoration: BoxDecoration(
-                color: const Color(0xFF161822).withValues(alpha: 0.92),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.12), width: 0.5),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  const Text('🎉', style: TextStyle(fontSize: 40)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '恭喜追完全部剧集',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '《${_activeDrama.title}》全 $_episodeCount 集已播放完毕',
-                    style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.6)),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: <Widget>[
-                      Expanded(
-                        child: OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          onPressed: () {
-                            Navigator.of(ctx).pop();
-                            setState(() => _episode = 1);
-                            _boot();
-                          },
-                          child: const Text('重温第 1 集'),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFFF4D4F),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          onPressed: () {
-                            Navigator.of(ctx).pop();
-                            Navigator.of(context).maybePop();
-                          },
-                          child: const Text('返回发现新剧'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   void _onEpisodeCompleted() {
     if (_autoAdvancing) {
       return;
     }
     if (_episodeCount > 0 && _episode + 1 > _episodeCount) {
-      if (mounted) {
-        _showSeriesFinishedSheet();
-      }
+      if (mounted) _iosExt.showSeriesFinished(context, _activeDrama, _episodeCount, () { setState(() => _episode = 1); _boot(); });
       return;
     }
     if (!_isMobilePlatform || _isWideLayout) {
@@ -1139,22 +937,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
       return;
     }
     if (_isFullscreen) {
-      // 智能识别视频原始宽高：竖屏短剧全屏保持竖屏，横屏视频全屏旋转为横屏
-      final int? vWidth = _player?.state.width;
-      final int? vHeight = _player?.state.height;
-      final bool isVideoLandscape = vWidth != null && vHeight != null && vWidth > vHeight;
-
-      if (isVideoLandscape) {
-        SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ]);
-      } else {
-        SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-          DeviceOrientation.portraitUp,
-        ]);
-      }
+      _iosExt.applyFullscreenOrientation(_player);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      // 进入全屏即开始计时，播放中 2 秒后收起控制层。
       _scheduleControlsHide();
     } else {
       // 退出全屏回到竖屏：取消计时并保证控制层可见。
@@ -1206,10 +991,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     showPlayerActionsSheet(
       context,
       autoPlay: _autoPlay,
-      onAutoPlayChanged: (bool value) {
-        setState(() => _autoPlay = value);
-        saveAutoPlay(value);
-      },
+      onAutoPlayChanged: (bool v) { setState(() => _autoPlay = v); saveAutoPlay(v); },
       volume: _muted ? 0 : _volume,
       muted: _muted,
       onVolumeChanged: (double value) {
@@ -1475,40 +1257,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     return done.future;
   }
 
-  int _verticalDragMode = 0; // 0: 上下滑切集, 1: 左边缘亮度, 2: 右边缘音量
-  double _screenBrightness = 1.0;
-
-  void _adjustBrightness(double delta) {
-    setState(() {
-      _screenBrightness = (_screenBrightness + delta).clamp(0.2, 1.0);
-    });
-    _showDoubleTapHint('☀️ 亮度 ${(_screenBrightness * 100).toInt()}%');
-  }
-
-  void _adjustVolume(double delta) {
-    setState(() {
-      _volume = (_volume + delta).clamp(0.0, 1.0);
-      _muted = _volume <= 0.01;
-    });
-    _player?.setVolume(_volume * 100);
-    _showDoubleTapHint(_volume <= 0.01 ? '🔇 静音' : '🔊 音量 ${(_volume * 100).toInt()}%');
-  }
-
   void _onVerticalDragStart(DragStartDetails details) {
     if (!_isMobilePlatform || _isWideLayout) {
       return;
     }
-    final double width = MediaQuery.sizeOf(context).width;
-    final double xRatio = details.localPosition.dx / width;
-    if (xRatio < 0.18) {
-      _verticalDragMode = 1;
-      return;
-    }
-    if (xRatio > 0.82) {
-      _verticalDragMode = 2;
-      return;
-    }
-    _verticalDragMode = 0;
+    if (_iosExt.onVerticalDragStart(context, details)) return;
     // 作废上一次未完成的提交/回弹，避免旧动画在松手后继续改集号。
     _swipeToken++;
     _swipeController.stop();
@@ -1518,16 +1271,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     if (!_isMobilePlatform || _isWideLayout) {
       return;
     }
-    if (_verticalDragMode == 1) {
-      final double delta = -details.delta.dy / 250.0;
-      _adjustBrightness(delta);
-      return;
-    }
-    if (_verticalDragMode == 2) {
-      final double delta = -details.delta.dy / 250.0;
-      _adjustVolume(delta);
-      return;
-    }
+    if (_iosExt.onVerticalDragUpdate(details, _volume, _setVolume)) return;
     final double height = MediaQuery.sizeOf(context).height;
     final double next = (_swipeDy + details.delta.dy).clamp(-height, height);
     if (next == _swipeDy) {
@@ -1547,10 +1291,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     if (!_isMobilePlatform || _isWideLayout) {
       return;
     }
-    if (_verticalDragMode != 0) {
-      _verticalDragMode = 0;
-      return;
-    }
+    if (_iosExt.onVerticalDragEnd()) return;
     final double height = MediaQuery.sizeOf(context).height;
     final int direction = swipeCommitDirection(
       dy: _swipeDy,
@@ -1785,28 +1526,43 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
 
   /// 收藏 / 分享操作栏（竖屏与横屏全屏共用一份）。
   /// 收藏与详情页 / 追剧页共用同一 store，状态天然联动。
-  /// 手机端将高频的倍速 / 选集移到右侧，并隐藏分享。
+  /// 手机端将高频的倍速 / 选集移到右侧，并隐藏分享；
+  /// 移动端右栏收成毛玻璃胶囊工具条（自动隐藏后随控制层一起淡出）。
   Widget _buildActionRail({required bool compact}) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: DlnaManager.instance.isCastingNotifier,
-      builder: (BuildContext context, bool isCasting, _) {
-        return _ActionRail(
-          onFavorite: _toggleFavorite,
-          onShare: () {},
-          favorited: ref.watch(isFavoriteProvider(_seriesId)),
-          compact: compact,
-          speedLabel: _speedLabel,
-          onSpeed: _showSpeedSheet,
-          onOpenEpisodes: _showEpisodes,
-          danmakuOn: _danmakuOn,
-          onToggleDanmaku: _toggleDanmaku,
-          onDanmakuSettings: () => showDanmakuSettings(context),
-          onMore: _showPlayerActions,
-          onCast: _handleCastTap,
-          onRotate: _rotateOrientation,
-          isCasting: isCasting,
-        );
-      },
+    Widget rail = _ActionRail(
+      onFavorite: _toggleFavorite,
+      onShare: () {},
+      favorited: ref.watch(isFavoriteProvider(_seriesId)),
+      compact: compact,
+      speedLabel: _speedLabel,
+      onSpeed: _showSpeedSheet,
+      onOpenEpisodes: _showEpisodes,
+      danmakuOn: _danmakuOn,
+      onToggleDanmaku: _toggleDanmaku,
+      onDanmakuSettings: () => showDanmakuSettings(context),
+      onMore: _showPlayerActions,
+    );
+    rail = _iosExt.wrapActionRail(context, rail, _currentStream?.url ?? '', _player, _episode, _activeDrama, _isFullscreen, _scheduleControlsHide);
+    // 竖屏胶囊容器：半透明深底 + 细描边，让按钮组在画面上是一个
+    // 悬浮工具条而不是散落的大字按钮；横屏（compact=false）保持原样。
+    final Widget body = !compact
+        ? rail
+        : DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0x8C141418),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0x1FFFFFFF)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+              child: rail,
+            ),
+          );
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: (MediaQuery.sizeOf(context).height - 80).clamp(120.0, 900.0),
+      ),
+      child: SingleChildScrollView(child: body),
     );
   }
 
@@ -1868,14 +1624,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     // 横屏布局跟随实际屏幕方向：全屏按钮（SystemChrome 请求）与物理旋转
     // （系统自动旋转）任一生效即采用横屏布局，避免部分设备方向请求被
     // 系统忽略时竖屏锚点把操作栏顶到画面上半部。
-    final bool isWide =
-        _isFullscreen ||
-        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final bool isWide = _isWideLayout;
     // 移动端竖屏：底部只留进度 + 全屏，传输按钮交给点按/滑动。
     final bool compactControls = !isWide && _isMobilePlatform;
     final double screenHeight = MediaQuery.sizeOf(context).height;
 
-    return CallbackShortcuts(
+    final Widget playerTree = CallbackShortcuts(
       bindings: _shortcutBindings,
       child: Focus(
         autofocus: true,
@@ -1891,8 +1645,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
             backgroundColor: AppTokens.playerBackground,
             // 手势方案：
             // - 点击：桌面切播放状态（控制层由鼠标移动唤出，见
-            //   [_onDesktopTap]）；移动端同样切播放状态，并保持控制层可见，
-            //   与主流短剧「点一下暂停/继续」一致；
+            //   [_onDesktopTap]）；移动端同样切播放状态，控制层隐藏时
+            //   先唤出并在 2 秒后再隐（见 [_onMobileTap]）。
             // - 上下滑切集用底层 Listener 直接比对指针位移，绕开手势竞技场，
             //   避免被子级滚动/滑块等识别器抢走；
             // - 长按左/右半屏持续快退/快进，左右滑拖动进度（竞技场里按住不动
@@ -1905,32 +1659,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _isMobilePlatform ? _onMobileTap : _onDesktopTap,
-                onDoubleTapDown: (TapDownDetails details) {
-                  if (_isScreenLocked) {
-                    _pulseLockButton();
-                    return;
-                  }
-                  final double width = MediaQuery.sizeOf(context).width;
-                  final double ratio = details.localPosition.dx / width;
-                  if (ratio < 0.38) {
-                    _seekRelative(-5);
-                  } else if (ratio > 0.62) {
-                    _seekRelative(5);
-                  } else {
-                    _togglePlay();
-                  }
-                },
-                onDoubleTap: () {},
                 // 长按画面：仅移动端临时 2x，松手恢复原倍速。
                 // 桌面端不挂长按，保持原有鼠标/空格交互不变。
                 // 移动端竖屏：长按中间 1/3 弹播放设置，左右两侧仍是临时 2x。
                 // 全屏保持原行为（任意位置长按 2x）；桌面不挂长按。
                 onLongPressStart: _isMobilePlatform
                     ? (LongPressStartDetails details) {
-                        if (_isScreenLocked) {
-                          _pulseLockButton();
-                          return;
-                        }
                         final double width =
                             MediaQuery.sizeOf(context).width;
                         if (!isWide &&
@@ -1948,15 +1682,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     ? (_) => _stopHoldSpeed()
                     : null,
                 onLongPressCancel: _isMobilePlatform ? _stopHoldSpeed : null,
-                onHorizontalDragStart: (_) {
-                  if (_isScreenLocked) {
-                    _pulseLockButton();
-                    return;
-                  }
-                  _startScrub();
-                },
+                onHorizontalDragStart: (_) => _startScrub(),
                 onHorizontalDragUpdate: (DragUpdateDetails details) {
-                  if (_isScreenLocked) return;
                   final Size size = MediaQuery.sizeOf(context);
                   _updateScrub(details.delta.dx, size.width);
                 },
@@ -1965,26 +1692,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                 // 移动端竖屏：上下滑跟手切集；全屏/桌面仍走原有手势。
                 // 不在这些平台注册竖向识别器，避免抢走长按 2x。
                 onVerticalDragStart: compactControls
-                    ? (DragStartDetails details) {
-                        if (_isScreenLocked) {
-                          _pulseLockButton();
-                          return;
-                        }
-                        _onVerticalDragStart(details);
-                      }
+                    ? _onVerticalDragStart
                     : null,
                 onVerticalDragUpdate: compactControls
-                    ? (DragUpdateDetails details) {
-                        if (_isScreenLocked) return;
-                        _onVerticalDragUpdate(details);
-                      }
+                    ? _onVerticalDragUpdate
                     : null,
-                onVerticalDragEnd: compactControls
-                    ? (DragEndDetails details) {
-                        if (_isScreenLocked) return;
-                        _onVerticalDragEnd(details);
-                      }
-                    : null,
+                onVerticalDragEnd: compactControls ? _onVerticalDragEnd : null,
                 onVerticalDragCancel: !compactControls
                     ? null
                     : () {
@@ -1996,10 +1709,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                   // 桌面滚轮上下切集（与触摸上/下滑同语义：下滚 = 下一集）。
                   onPointerSignal: _handleWheelSignal,
                   onPointerDown: (PointerDownEvent event) {
-                    if (_isScreenLocked) {
-                      _pulseLockButton();
-                      return;
-                    }
                     _pointerStart = event.position;
                     // 任意点击（含控制栏按钮）都刷新自动隐藏计时，
                     // 避免操作后控制层一直挂着不隐藏。
@@ -2008,7 +1717,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                     }
                   },
                   onPointerUp: (PointerUpEvent event) {
-                    if (_isScreenLocked) return;
                     final Offset? start = _pointerStart;
                     _pointerStart = null;
                     if (_isMobilePlatform && !isWide) {
@@ -2154,6 +1862,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                       episodeNumber: _episode,
                                       qualityLabel:
                                           _currentStream?.definition ?? '',
+                                      showMobileActions: compactControls,
+                                      speedLabel: _speedLabel,
+                                      onSpeed: _showSpeedSheet,
+                                      isFullscreen: isWide,
+                                      onToggleFullscreen: _toggleFullscreen,
                                     ),
                                   ),
                                   Align(
@@ -2230,17 +1943,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                                     onPressed: _showEpisodes,
                                                   ),
                                                 ],
-                                                _GlassSquareButton(
-                                                  icon: isWide
-                                                      ? Icons
-                                                            .fullscreen_exit_rounded
-                                                      : Icons
-                                                            .fullscreen_rounded,
-                                                  tooltip: isWide
-                                                      ? '退出全屏'
-                                                      : '全屏',
-                                                  onPressed: _toggleFullscreen,
-                                                ),
+                                                // 移动端竖屏：全屏与倍速在顶栏，
+                                                // Player 未就绪时底部不再兜底。
+                                                if (!compactControls)
+                                                  _GlassSquareButton(
+                                                    icon: isWide
+                                                        ? Icons
+                                                              .fullscreen_exit_rounded
+                                                        : Icons
+                                                              .fullscreen_rounded,
+                                                    tooltip: isWide
+                                                        ? '退出全屏'
+                                                        : '全屏',
+                                                    onPressed:
+                                                        _toggleFullscreen,
+                                                  ),
                                               ],
                                             ),
                                           ),
@@ -2260,11 +1977,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                             enabled:
                                                 _episodeCount == 0 ||
                                                 _episode < _episodeCount,
-                                            onToggleAutoPlay: () {
-                                              final bool next = !_autoPlay;
-                                              setState(() => _autoPlay = next);
-                                              saveAutoPlay(next);
-                                            },
+                                            onToggleAutoPlay: () { setState(() => _autoPlay = !_autoPlay); saveAutoPlay(_autoPlay); },
                                             onOpenNext: _playNext,
                                           ),
                                         ],
@@ -2344,129 +2057,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                                   ),
                                 ),
                               ),
-                      // 悬浮屏幕防误触锁定按钮（屏幕左侧居中）
-                      if (_isMobilePlatform)
-                        Positioned(
-                          left: 16,
-                          top: 0,
-                          bottom: 0,
-                          child: Center(
-                            child: AnimatedOpacity(
-                              duration: const Duration(milliseconds: 240),
-                              opacity: _isScreenLocked
-                                  ? (_lockButtonVisible ? 0.92 : 0.22)
-                                  : (_controlsVisible ? 0.88 : 0.0),
-                              child: IgnorePointer(
-                                ignoring: !_isScreenLocked && !_controlsVisible,
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: _toggleScreenLock,
-                                  child: Container(
-                                    width: 44,
-                                    height: 44,
-                                    decoration: BoxDecoration(
-                                      color: Colors.black.withValues(alpha: 0.58),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: Colors.white.withValues(alpha: 0.22),
-                                        width: 0.8,
-                                      ),
-                                      boxShadow: const <BoxShadow>[
-                                        BoxShadow(
-                                          color: Colors.black26,
-                                          blurRadius: 8,
-                                          offset: Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Icon(
-                                      _isScreenLocked
-                                          ? Icons.lock_rounded
-                                          : Icons.lock_open_rounded,
-                                      color: _isScreenLocked
-                                          ? const Color(0xFFFF4D4F)
-                                          : Colors.white,
-                                      size: 22,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      // 屏幕亮度调暗蒙层（夜间观影防刺眼保护眼睛）
-                      if (_screenBrightness < 0.99)
-                        Positioned.fill(
-                          child: IgnorePointer(
-                            child: Container(
-                              color: Colors.black.withValues(
-                                alpha: (1.0 - _screenBrightness).clamp(0.0, 0.8),
-                              ),
-                            ),
-                          ),
-                        ),
-                      // 中央双击快退/快进提示胶囊
-                      if (_centerHintText != null)
-                        Center(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(24),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 12,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.68),
-                                  borderRadius: BorderRadius.circular(24),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.16),
-                                    width: 0.5,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: <Widget>[
-                                    Icon(
-                                      _centerHintText!.contains('快退')
-                                          ? Icons.replay_5_rounded
-                                          : Icons.forward_5_rounded,
-                                      color: Colors.white,
-                                      size: 22,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      _centerHintText!,
-                                      style: const TextStyle(
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      // 投屏遥控浮层（投屏激活时接管界面）
-                      ValueListenableBuilder<bool>(
-                        valueListenable: DlnaManager.instance.isCastingNotifier,
-                        builder: (BuildContext context, bool isCasting, _) {
-                          if (!isCasting) return const SizedBox.shrink();
-                          return Positioned.fill(
-                            child: CastRemoteOverlay(
-                              drama: _activeDrama,
-                              episodeNumber: _episode,
-                              episodeTitle: _titleForEpisode(_episode),
-                              onPlayPrevious: _playPrevious,
-                              onPlayNext: _playNext,
-                              onExitCast: _exitCast,
-                            ),
-                          );
-                        },
-                      ),
                     ],
                   ),
                 ),
@@ -2475,6 +2065,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
           ),
         ),
       ),
+    );
+    return _iosExt.wrapPlayerTree(
+      context, playerTree, _isMobilePlatform, _controlsVisible, drama, _episode, _titleForEpisode(_episode),
+      onSetControls: (bool v) { if (v) { setState(() => _controlsVisible = true); _scheduleControlsHide(); } else { _controlsHideTimer?.cancel(); setState(() => _controlsVisible = false); } },
+      onPrev: _playPrevious, onNext: _playNext, onExitCast: () => _iosExt.exitCast(_player, () { if (mounted) setState(() {}); }),
     );
   }
 }
@@ -2584,6 +2179,11 @@ class _PlayerTopBar extends StatelessWidget {
     required this.drama,
     required this.episodeNumber,
     required this.qualityLabel,
+    this.showMobileActions = false,
+    this.speedLabel = '',
+    this.onSpeed,
+    this.isFullscreen = false,
+    this.onToggleFullscreen,
   });
 
   final Drama drama;
@@ -2591,6 +2191,13 @@ class _PlayerTopBar extends StatelessWidget {
 
   /// 当前流清晰度（如 1080P）；空串表示未就绪，副标题只显示集数。
   final String qualityLabel;
+
+  /// 移动端竖屏：标题右侧放倍速 pill 与全屏按钮（全屏从底部控制行上移）。
+  final bool showMobileActions;
+  final String speedLabel;
+  final VoidCallback? onSpeed;
+  final bool isFullscreen;
+  final VoidCallback? onToggleFullscreen;
 
   @override
   Widget build(BuildContext context) {
@@ -2642,6 +2249,17 @@ class _PlayerTopBar extends StatelessWidget {
               ],
             ),
           ),
+          if (showMobileActions) ...<Widget>[
+            _RailTextAction(label: speedLabel, onTap: onSpeed ?? () {}),
+            const SizedBox(width: 4),
+            _GlassSquareButton(
+              icon: isFullscreen
+                  ? Icons.fullscreen_exit_rounded
+                  : Icons.fullscreen_rounded,
+              tooltip: isFullscreen ? '退出全屏' : '全屏',
+              onPressed: onToggleFullscreen ?? () {},
+            ),
+          ],
         ],
       ),
     );
@@ -2837,17 +2455,9 @@ class _PlaybackProgress extends StatelessWidget {
                     const SizedBox(height: 2),
                     Row(
                       children: <Widget>[
-                        // 移动端竖屏：点画面暂停、上下滑切集，底部只留全屏。
-                        if (compact) ...<Widget>[
-                          const Spacer(),
-                          _GlassSquareButton(
-                            icon: isFullscreen
-                                ? Icons.fullscreen_exit_rounded
-                                : Icons.fullscreen_rounded,
-                            tooltip: isFullscreen ? '退出全屏' : '全屏',
-                            onPressed: onToggleFullscreen,
-                          ),
-                        ] else ...<Widget>[
+                        // 移动端竖屏：点画面暂停、上下滑切集；全屏与倍速
+                        // 已上移到顶栏，底部只留时间与进度条。
+                        if (!compact) ...<Widget>[
                           _GlassSquareButton(
                             icon: Icons.skip_previous_rounded,
                             tooltip: '上一集',
@@ -3068,9 +2678,6 @@ class _ActionRail extends StatelessWidget {
     required this.onToggleDanmaku,
     required this.onDanmakuSettings,
     required this.onMore,
-    required this.onCast,
-    required this.onRotate,
-    this.isCasting = false,
     this.favorited = false,
     this.compact = false,
   });
@@ -3086,9 +2693,6 @@ class _ActionRail extends StatelessWidget {
 
   /// 移动端右栏的「播放设置」入口：稳定打开清晰度/弹幕设置/自动播放/音量。
   final VoidCallback onMore;
-  final VoidCallback onCast;
-  final VoidCallback onRotate;
-  final bool isCasting;
   final bool favorited;
   final bool compact;
 
@@ -3098,29 +2702,13 @@ class _ActionRail extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         if (compact) ...<Widget>[
-          _RailTextAction(label: speedLabel, onTap: onSpeed),
-          const SizedBox(height: 10),
+          // 倍速已上移顶栏；胶囊只保留选集 / 弹幕 / 设置 / 收藏。
           _RailAction(
             icon: Icons.list_rounded,
             label: '选集',
             onTap: onOpenEpisodes,
           ),
-          const SizedBox(height: 18),
-          _RailAction(
-            icon: Icons.cast_rounded,
-            label: isCasting ? '投屏中' : '投屏',
-            tooltip: '投屏到电视',
-            iconColor: isCasting ? const Color(0xFFFF4D4F) : null,
-            onTap: onCast,
-          ),
-          const SizedBox(height: 18),
-          _RailAction(
-            icon: Icons.screen_rotation_rounded,
-            label: '旋转',
-            tooltip: '旋转屏幕',
-            onTap: onRotate,
-          ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 10),
           _RailAction(
             icon: danmakuOn
                 ? Icons.subtitles_rounded
@@ -3143,21 +2731,6 @@ class _ActionRail extends StatelessWidget {
             iconColor: favorited ? const Color(0xFFFFC94D) : null,
           ),
         ] else ...<Widget>[
-          _RailAction(
-            icon: Icons.cast_rounded,
-            label: isCasting ? '投屏中' : '投屏',
-            tooltip: '投屏到电视',
-            iconColor: isCasting ? const Color(0xFFFF4D4F) : null,
-            onTap: onCast,
-          ),
-          const SizedBox(height: 18),
-          _RailAction(
-            icon: Icons.screen_rotation_rounded,
-            label: '旋转',
-            tooltip: '旋转屏幕',
-            onTap: onRotate,
-          ),
-          const SizedBox(height: 18),
           _RailAction(
             icon: danmakuOn
                 ? Icons.subtitles_rounded

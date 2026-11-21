@@ -2,6 +2,20 @@ name: Build iOS (IPA)
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: '构建模式：release（出底包并生成 IPA）或 patch（热更新补丁，免重装）'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - patch
+      release_version:
+        description: '仅 patch 模式填写（如 1.5.3+153）；留空则自动读取 pubspec.yaml 版本'
+        required: false
+        default: ''
+        type: string
   push:
     branches:
       - master
@@ -10,16 +24,35 @@ on:
       - '**.md'
       - '.gitignore'
 
-env:
-  FLUTTER_VERSION: '3.47.9'
-
 jobs:
   ios:
     name: Build iOS IPA (红果-阿帝版)
-    runs-on: macos-latest
+    runs-on: macos-15
+    permissions:
+      contents: write
+    env:
+      SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          PUB_VER="$(sed -n 's/^version: *//p' pubspec.yaml | head -1 | tr -d '\r')"
+          VER_NAME="${PUB_VER%%+*}"
+          SDK_REF="$(awk '/^[[:space:]]*openhongguo:/{flag=1} flag && /^[[:space:]]*ref:/{print $2; exit}' pubspec.yaml | tr -d '\r')"
+          MODE="${{ github.event.inputs.mode || 'release' }}"
+          PATCH_VER="${{ github.event.inputs.release_version || '' }}"
+          if [ -z "$PATCH_VER" ]; then
+            PATCH_VER="$PUB_VER"
+          fi
+          echo "pub_ver=$PUB_VER" >> "$GITHUB_OUTPUT"
+          echo "ver_name=$VER_NAME" >> "$GITHUB_OUTPUT"
+          echo "sdk_ref=$SDK_REF" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "patch_ver=$PATCH_VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved pub_ver=$PUB_VER sdk_ref=$SDK_REF mode=$MODE patch_ver=$PATCH_VER"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -33,29 +66,38 @@ jobs:
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
           gomobile init
 
-      - name: Rebuild OpenhongguoCore with V5 playback protocol
+      - name: Rebuild OpenhongguoCore (pinned ref)
         run: |
+          set -eu
           git clone https://github.com/Sxuan-Coder/openhongguo.git /tmp/openhongguo
+          cd /tmp/openhongguo
+          if [ -n "${{ steps.meta.outputs.sdk_ref }}" ]; then
+            git checkout "${{ steps.meta.outputs.sdk_ref }}"
+          fi
           cd /tmp/openhongguo/bindings/mobile/core
           gomobile bind -target ios,iossimulator -iosversion 13 -trimpath -ldflags="-s -w" -o /tmp/OpenhongguoCore.xcframework .
           python3 -c "
           with open('/tmp/OpenhongguoCore.xcframework/ios-arm64/OpenhongguoCore.framework/OpenhongguoCore', 'rb') as f:
               data = f.read()
-          print('multi_video_model check:', b'multi_video_model' in data)
           assert b'multi_video_model' in data, 'ERROR: multi_video_model missing!'
           "
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: '3.47.9'
           channel: stable
+          cache: true
+
+      - name: Set up Shorebird
+        uses: shorebirdtech/setup-shorebird@v1
+        with:
           cache: true
 
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Patch cached openhongguo with newly compiled OpenhongguoCore
+      - name: Patch cached openhongguo with pinned OpenhongguoCore
         run: |
           find "$HOME" -name "OpenhongguoCore.xcframework" -type d 2>/dev/null | while read -r dir; do
             if [[ "$dir" != "/tmp/OpenhongguoCore.xcframework"* ]]; then
@@ -74,20 +116,47 @@ jobs:
       - name: Analyze Flutter
         run: flutter analyze
 
-      - name: Build iOS (No Codesign)
-        run: flutter build ios --release --no-codesign
+      - name: Shorebird Release iOS (No Codesign)
+        if: steps.meta.outputs.mode == 'release'
+        run: shorebird release ios --no-codesign
+
+      - name: Shorebird Patch iOS
+        if: steps.meta.outputs.mode == 'patch'
+        run: shorebird patch ios --release-version="${{ steps.meta.outputs.patch_ver }}"
 
       - name: Package IPA
+        if: steps.meta.outputs.mode == 'release'
         run: |
+          set -eu
           mkdir -p build/ios/ipa/Payload
-          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH="build/ios/iphoneos/Runner.app"
+          fi
+          cp -r "$APP_PATH" build/ios/ipa/Payload/
           cd build/ios/ipa
-          zip -r -q "HongGuo-AdiBan.ipa" Payload
+          ditto -c -k --sequesterRsrc --keepParent Payload "HongGuo-AdiBan.ipa"
           ls -lh HongGuo-AdiBan.ipa
 
       - name: Upload IPA Artifact
+        if: steps.meta.outputs.mode == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: HongGuo-AdiBan-iOS-IPA
           path: build/ios/ipa/HongGuo-AdiBan.ipa
           retention-days: 14
+
+      - name: Publish Fork Release on master push
+        if: steps.meta.outputs.mode == 'release' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG="v${{ steps.meta.outputs.ver_name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/ios/ipa/HongGuo-AdiBan.ipa --clobber
+          else
+            gh release create "$TAG" build/ios/ipa/HongGuo-AdiBan.ipa \
+              --title "红果-阿帝版 $TAG" \
+              --notes "iOS 未签名包（支持 Shorebird 热更新，请使用 iOSGods App+ 或其他工具自签安装）。"
+          fi

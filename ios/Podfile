@@ -1,4 +1,10 @@
-# Uncomment this line to define a global platform for your project
+# iOS 的 CocoaPods 配置。
+#
+# 内容来自本机 Flutter 3.47.9 的模板
+# packages/flutter_tools/templates/cocoapods/Podfile-ios，
+# 只把平台版本从注释改成显式声明：与 Runner 的
+# IPHONEOS_DEPLOYMENT_TARGET = 15.0 和 openhongguo 的
+# s.platform = :ios, '15.0' 保持一致，避免依赖隐式默认值。
 platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
@@ -13,7 +19,7 @@ project 'Runner', {
 def flutter_root
   generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
   unless File.exist?(generated_xcode_build_settings_path)
-    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get has executed first"
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
   end
 
   File.foreach(generated_xcode_build_settings_path) do |line|
