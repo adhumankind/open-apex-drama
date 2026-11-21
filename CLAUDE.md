@@ -28,6 +28,14 @@ powershell -ExecutionPolicy Bypass -File tool\bump_version.ps1      # 版本自�
 CI（`.github/workflows/ci.yml`）用 Flutter 3.47.9 跑 `flutter analyze` + `flutter test`；PR 必须全绿。
 `analysis_options.yaml` 只分析 `lib/` 与 `test/`（平台目录被排除），规则为 `flutter_lints` 默认集。
 
+## 分支与 PR 门禁
+
+- 单次改动（`git diff --stat` 的新增 + 删除行数合计）**超过 400 行必须提 PR**，禁止直接推 `master`；
+  CI 全绿后合并。
+- **合并方式用 merge commit，不用 squash**（初期保留分支历史），即 `gh pr merge <n> --merge --delete-branch`。
+- **大功能必须新开单一分支**（`feat/` / `fix/` / `refactor/` 前缀）完成，再合并回来；合并后先把本地
+  `master` 对齐 `origin/master`，再开下一个分支。
+
 ## 架构
 
 ### 启动与两套状态体系

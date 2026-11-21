@@ -61,3 +61,6 @@ dist/
 *.jks
 *.keystore
 worker_index.js
+
+# 本地产品原型（不随仓库分发）
+/docs/prototypes/

@@ -27,7 +27,7 @@
 
 ## 1. P0 任务清单（立刻执行 / 阻塞级修复与核心架构解耦）
 
-### [ ] P0-1：拉齐上游最新代码（`3470910`）+ iOS 定制低冲突解耦改造
+### [x] P0-1：拉齐上游最新代码（`3470910`）+ iOS 定制低冲突解耦改造
 - **背景与痛点**：`git diff --stat upstream/master..HEAD` 显示自制改动直接侵入 `player_screen.dart` 达 635 行、`player_actions_sheet.dart` 222 行、`.github/workflows/release.yml` 50 行，而上游高频修改播放器与弹幕模块，导致无法跟随上游更新。
 - **改动目标**：
   1. 将 iOS 专属扩展（DLNA 投屏调度、锁屏状态机、方向旋转、跳过片头片尾、边缘手势、剧终提示）抽离至独立目录 `lib/ios_ext/`（例如 `player_ios_ext.dart`、`ios_overlays.dart`）；

@@ -60,9 +60,15 @@ buildNumber = major*100 + minor*10 + patch      # 1.1.2 -> 112
 | Android armv7 | `ApexDrama-v<ver>-armeabi-v7a.apk` |
 | Windows 安装器 | `ApexDrama-<ver>-windows-x64-setup.exe` |
 | Windows 便携版 | `ApexDrama-<ver>-windows-x64.zip` |
+| iOS（未签名，未测试） | `ApexDrama-<ver>_ios_unsigned.ipa` |
 
 APK 带 `v` 前缀，Windows 包不带。命名必须包含 `arm64-v8a` / `windows-x64`，
 否则 `update_service.dart` 的资产筛选挑不到（会回退到 Release 页面）。
+
+iOS 包以下划线连接版本号，且没有 `v` 前缀：`update_service.dart` 只认
+`.apk` 与含 `windows-x64` 的 zip/msix/exe，`.ipa` 不会被误选。该包**未签名**
+（只能 AltStore / SideStore / Sideloadly 自签安装）且**未经真机验证**，
+发版说明由 `release.yml` 固定追加「iOS（未测试）」一节，不要删掉。
 
 ## 发版流程
 
@@ -96,11 +102,24 @@ gh release create v<ver> -R Sxuan-Coder/open-apex-drama \
   "dist/ApexDrama-v<ver>-arm64-v8a.apk" \
   "dist/ApexDrama-v<ver>-armeabi-v7a.apk" \
   "dist/ApexDrama-<ver>-windows-x64-setup.exe" \
-  "dist/ApexDrama-<ver>-windows-x64.zip"
+  "dist/ApexDrama-<ver>-windows-x64.zip" \
+  "dist/ApexDrama-<ver>_ios_unsigned.ipa"
 
 # 校验
 gh api repos/Sxuan-Coder/open-apex-drama/releases/latest --jq '.tag_name, .name'
 ```
+
+## 分支与 PR 门禁
+
+- **改动超过 400 行必须走 PR**：单次改动（`git diff --stat` 的新增 + 删除行数合计）超过
+  400 行时，禁止直接推 `master`，必须新建分支 → 提 PR → CI 全绿 → 合并。
+- **大功能必须单一分支开发**：跨模块、涉及多个文件或需要多次提交的功能改动，新建
+  `feat/` / `fix/` / `refactor/` 开头的独立分支完成，全部改动收在该分支上，合并后先把
+  本地 `master` 对齐 `origin/master` 再开下一个分支；不允许长期并行的多条功能分支
+  同时改同一批文件。
+- **合并方式用 merge commit，不用 squash**：项目初期保留分支历史，便于回溯每条改动
+  的完整提交序列；`gh pr merge <n> --merge --delete-branch`。
+- PR 标题沿用 `<type>(scope): <summary>`，描述写清改动内容、验证方式与风险点。
 
 ## 其他约束
 

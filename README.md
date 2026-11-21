@@ -5,6 +5,7 @@
 [![Android](https://img.shields.io/badge/Android-下载_APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/Sxuan-Coder/open-apex-drama/releases/latest)
 [![Windows](https://img.shields.io/badge/Windows-下载-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Sxuan-Coder/open-apex-drama/releases/latest)
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue?style=for-the-badge)](https://www.gnu.org/licenses/agpl-3.0)
+[![官网](https://img.shields.io/badge/官网-apexdrama.sxapex.com-FF6B9D?style=for-the-badge&logo=googlechrome&logoColor=white)](https://apexdrama.sxapex.com)
 
 *前两个徽标跳转最新版本下载*
 
@@ -12,23 +13,31 @@
 
 ### 移动端
 
-| 首页 | 看剧 | 详情 |
-|:---:|:---:|:---:|
-| ![首页](docs/screenshots/mobile-home.jpg) | ![看剧](docs/screenshots/mobile-watch.jpg) | ![详情](docs/screenshots/mobile-detail.jpg) |
-
-| 播放页 | 榜单 |
-|:---:|:---:|
-| ![播放页](docs/screenshots/mobile-player.jpg) | ![榜单](docs/screenshots/mobile-rank.jpg) |
+<table>
+  <tr><th>首页</th><th>看剧</th><th>详情</th><th>播放页</th><th>榜单</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/mobile-home.jpg" width="140"></td>
+    <td><img src="docs/screenshots/mobile-watch.jpg" width="140"></td>
+    <td><img src="docs/screenshots/mobile-detail.jpg" width="140"></td>
+    <td><img src="docs/screenshots/mobile-player.jpg" width="140"></td>
+    <td><img src="docs/screenshots/mobile-rank.jpg" width="140"></td>
+  </tr>
+</table>
 
 ### 桌面端（Windows）
 
-| 首页 | 播放页 |
-|:---:|:---:|
-| ![首页](docs/screenshots/desktop-home.jpg) | ![播放页](docs/screenshots/desktop-player.jpg) |
-
-| 详情 | 榜单 |
-|:---:|:---:|
-| ![详情](docs/screenshots/desktop-detail.jpg) | ![榜单](docs/screenshots/desktop-rank.jpg) |
+<table>
+  <tr><th>首页</th><th>播放页</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/desktop-home.jpg" width="400"></td>
+    <td><img src="docs/screenshots/desktop-player.jpg" width="400"></td>
+  </tr>
+  <tr><th>详情</th><th>榜单</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/desktop-detail.jpg" width="400"></td>
+    <td><img src="docs/screenshots/desktop-rank.jpg" width="400"></td>
+  </tr>
+</table>
 
 ## 功能
 
